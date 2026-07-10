@@ -1,0 +1,11 @@
+{{- if not .Values.config.existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "groupbridge.fullname" . }}
+  labels:
+    {{- include "groupbridge.labels" . | nindent 4 }}
+data:
+  {{ .Values.config.key }}: |
+    {{- .Values.config.content | nindent 4 }}
+{{- end }}

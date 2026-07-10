@@ -1,0 +1,178 @@
+# The default file-backed state store is single-writer. Use one replica unless
+# the configured state backend provides cross-pod coordination.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/enel1221/groupbridge
+  pullPolicy: IfNotPresent
+  tag: ""
+  digest: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/path: /metrics
+  prometheus.io/port: "8080"
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+
+config:
+  existingConfigMap: ""
+  key: config.yaml
+  mountPath: /etc/groupbridge/config.yaml
+  # This nonsecret configuration is used only when existingConfigMap is empty.
+  content: |
+    server:
+      address: ":8080"
+      shutdownTimeout: 10s
+    webhook:
+      secretEnv: GROUPBRIDGE_WEBHOOK_SECRET
+      maxSkew: 5m
+    source:
+      type: keycloak
+      baseURL: https://keycloak.example.com
+      realm: example
+      clientID: groupbridge
+      clientSecretEnv: GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET
+      allowInsecureHTTP: false
+      pollInterval: 30s
+    targets:
+      - name: gitlab
+        type: gitlab
+        baseURL: https://gitlab.example.com
+        tokenEnv: GROUPBRIDGE_GITLAB_TOKEN
+        resolverTokenEnv: GROUPBRIDGE_GITLAB_RESOLVER_TOKEN
+        oidcProvider: openid_connect
+        allowInsecureHTTP: false
+    rules:
+      - name: gitlab-groups
+        sourceGroupPrefix: /gitlab
+        targetProvider: gitlab
+        targetParent: platform
+        createGroups: false
+        adoptExistingGroup: false
+        accessLevel: developer
+        prune: managed-only
+        protectedUsers:
+          - root
+        maxRemovals: 20
+        identityMatch:
+          # Preferred: match GitLab's OIDC external UID to Keycloak's user ID.
+          # Add username/email only for installations with intentionally aligned
+          # legacy accounts; those identifiers are mutable and less trustworthy.
+          - oidc
+        enforceAccessLevel: false
+    state:
+      path: /var/lib/groupbridge/state.json
+
+secret:
+  # Creating secrets from Helm values stores credentials in release history.
+  # Create this Secret out-of-band and set its name here.
+  existingSecret: groupbridge
+  keys:
+    keycloakClientSecret: keycloak-client-secret
+    gitlabToken: gitlab-token
+    gitlabResolverToken: gitlab-resolver-token
+    webhookSecret: webhook-secret
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 2
+  timeoutSeconds: 2
+  failureThreshold: 30
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  # By default, ingress is limited to pods in the release namespace. Add
+  # monitoring/ingress namespace selectors here when required.
+  additionalIngress: []
+  # Providers and Keycloak are commonly outside Kubernetes, so egress remains
+  # open unless explicit rules are supplied.
+  egress: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector: {}
+
+terminationGracePeriodSeconds: 30
+priorityClassName: ""
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []

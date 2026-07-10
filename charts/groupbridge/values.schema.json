@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "replicaCount": { "const": 1 },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "pullPolicy", "tag", "digest"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] },
+        "tag": { "type": "string" },
+        "digest": { "type": "string", "pattern": "^(|sha256:[a-f0-9]{64})$" }
+      }
+    },
+    "imagePullSecrets": { "type": "array" },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "serviceAccount": { "type": "object" },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingConfigMap", "key", "mountPath", "content"],
+      "properties": {
+        "existingConfigMap": { "type": "string" },
+        "key": { "type": "string", "minLength": 1 },
+        "mountPath": { "type": "string", "pattern": "^/" },
+        "content": { "type": "string" }
+      }
+    },
+    "secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret", "keys"],
+      "properties": {
+        "existingSecret": { "type": "string", "minLength": 1 },
+        "keys": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["keycloakClientSecret", "gitlabToken", "gitlabResolverToken", "webhookSecret"],
+          "properties": {
+            "keycloakClientSecret": { "type": "string", "minLength": 1 },
+            "gitlabToken": { "type": "string", "minLength": 1 },
+            "gitlabResolverToken": { "type": "string", "minLength": 1 },
+            "webhookSecret": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "service": { "type": "object" },
+    "resources": { "type": "object" },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "existingClaim", "storageClass", "accessModes", "size", "annotations"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "existingClaim": { "type": "string" },
+        "storageClass": { "type": "string" },
+        "accessModes": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "size": { "type": "string", "minLength": 1 },
+        "annotations": { "type": "object" }
+      }
+    },
+    "livenessProbe": { "type": "object" },
+    "readinessProbe": { "type": "object" },
+    "startupProbe": { "type": "object" },
+    "podDisruptionBudget": { "type": "object" },
+    "networkPolicy": { "type": "object" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "topologySpreadConstraints": { "type": "array" },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+    "priorityClassName": { "type": "string" },
+    "extraEnv": { "type": "array" },
+    "extraVolumes": { "type": "array" },
+    "extraVolumeMounts": { "type": "array" }
+  }
+}

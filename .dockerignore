@@ -1,0 +1,7 @@
+.git
+.github
+.groupbridge
+bin
+coverage.out
+dist
+extensions/keycloak-event-listener/target

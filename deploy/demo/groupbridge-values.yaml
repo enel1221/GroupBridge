@@ -1,0 +1,67 @@
+replicaCount: 1
+
+image:
+  repository: groupbridge
+  tag: dev
+  pullPolicy: Never
+
+config:
+  content: |
+    server:
+      address: ":8080"
+      shutdownTimeout: 10s
+    webhook:
+      secretEnv: GROUPBRIDGE_WEBHOOK_SECRET
+      maxSkew: 5m
+    source:
+      type: keycloak
+      baseURL: http://keycloak:8080
+      realm: groupbridge
+      clientID: groupbridge
+      clientSecretEnv: GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET
+      allowInsecureHTTP: true
+      pollInterval: 5s
+    targets:
+      - name: gitlab
+        type: gitlab
+        baseURL: http://gitlab
+        tokenEnv: GROUPBRIDGE_GITLAB_TOKEN
+        resolverTokenEnv: GROUPBRIDGE_GITLAB_RESOLVER_TOKEN
+        oidcProvider: openid_connect
+        allowInsecureHTTP: true
+    rules:
+      - name: all-groups
+        sourceGroupPrefix: /
+        targetProvider: gitlab
+        targetParent: ""
+        createGroups: true
+        adoptExistingGroup: false
+        accessLevel: developer
+        prune: authoritative
+        protectedUsers:
+          - root
+        maxRemovals: 20
+        identityMatch:
+          - oidc
+          - username
+        enforceAccessLevel: false
+    state:
+      path: /var/lib/groupbridge/state.json
+
+secret:
+  existingSecret: groupbridge
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 32Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+persistence:
+  enabled: true
+  size: 1Gi
+
+networkPolicy:
+  enabled: true

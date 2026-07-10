@@ -1,0 +1,9 @@
+.groupbridge/
+.idea/
+.vscode/
+bin/
+coverage.out
+dist/
+*.log
+*.tmp
+extensions/keycloak-event-listener/target/
