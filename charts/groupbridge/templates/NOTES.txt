@@ -1,0 +1,14 @@
+GroupBridge is installed in namespace {{ .Release.Namespace }}.
+
+Check its status:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "groupbridge.fullname" . }}
+
+Watch reconciliation logs:
+  kubectl -n {{ .Release.Namespace }} logs deployment/{{ include "groupbridge.fullname" . }} --all-pods=true --prefix -f
+
+The chart does not put credentials into Helm release history. It expects Secret
+{{ .Values.secret.existingSecret }} with keys:
+  {{ .Values.secret.keys.keycloakClientSecret }}
+  {{ .Values.secret.keys.gitlabToken }}
+  {{ .Values.secret.keys.gitlabResolverToken }}
+  {{ .Values.secret.keys.webhookSecret }}

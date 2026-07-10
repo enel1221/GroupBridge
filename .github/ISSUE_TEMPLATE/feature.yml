@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose a focused behavior or provider improvement
+title: "feat: "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator or identity-management problem should be solved?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and compatibility impact
+      description: Cover ownership, pruning, permissions, migration, and failure behavior.
+    validations:
+      required: true

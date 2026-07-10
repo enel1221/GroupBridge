@@ -1,0 +1,19 @@
+apiVersion: v2
+name: groupbridge
+description: Reconcile Keycloak group membership into GitLab and other access targets.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/enel1221/GroupBridge
+sources:
+  - https://github.com/enel1221/GroupBridge
+keywords:
+  - identity
+  - keycloak
+  - gitlab
+  - access-management
+maintainers:
+  - name: enel1221
+    url: https://github.com/enel1221
+annotations:
+  artifacthub.io/license: Apache-2.0

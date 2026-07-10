@@ -1,0 +1,43 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: groupbridge
+servers: 1
+agents: 1
+kubeAPI:
+  hostIP: 0.0.0.0
+  hostPort: "6550"
+image: rancher/k3s:v1.36.2-k3s1@sha256:6a47cea22c4b834d4ba72c89d291696b79ebe406251f90b446e4dff03513dd87
+ports:
+  - port: 0.0.0.0:8080:30080
+    nodeFilters:
+      - loadbalancer
+  - port: 0.0.0.0:8081:30081
+    nodeFilters:
+      - loadbalancer
+  - port: 0.0.0.0:2222:30022
+    nodeFilters:
+      - loadbalancer
+options:
+  k3d:
+    wait: true
+    timeout: 120s
+    disableLoadbalancer: false
+    disableImageVolume: false
+  k3s:
+    extraArgs:
+      - arg: --disable=traefik,servicelb
+        nodeFilters:
+          - server:*
+      - arg: --tls-san=__HOST_IP__
+        nodeFilters:
+          - server:*
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true
+  runtime:
+    labels:
+      - label: groupbridge.local/demo=true
+        nodeFilters:
+          - server:*
+          - agent:*

@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "groupbridge.fullname" . }}
+  labels:
+    {{- include "groupbridge.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "groupbridge.selectorLabels" . | nindent 6 }}
+  strategy:
+    # The current JSON state store is single-writer and the PVC is RWO.
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "groupbridge.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "groupbridge.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      containers:
+        - name: groupbridge
+          image: {{ include "groupbridge.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: GROUPBRIDGE_CONFIG
+              value: {{ .Values.config.mountPath | quote }}
+            - name: GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.existingSecret }}
+                  key: {{ .Values.secret.keys.keycloakClientSecret }}
+            - name: GROUPBRIDGE_GITLAB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.existingSecret }}
+                  key: {{ .Values.secret.keys.gitlabToken }}
+            - name: GROUPBRIDGE_GITLAB_RESOLVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.existingSecret }}
+                  key: {{ .Values.secret.keys.gitlabResolverToken }}
+            - name: GROUPBRIDGE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.existingSecret }}
+                  key: {{ .Values.secret.keys.webhookSecret }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: {{ .Values.config.mountPath }}
+              subPath: {{ .Values.config.key }}
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.persistence.enabled }}
+            - name: state
+              mountPath: /var/lib/groupbridge
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "groupbridge.configMapName" . }}
+            items:
+              - key: {{ .Values.config.key }}
+                path: {{ .Values.config.key }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- if .Values.persistence.enabled }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ default (include "groupbridge.fullname" .) .Values.persistence.existingClaim }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range . }}
+        - {{- omit . "labelSelector" | toYaml | nindent 10 }}
+          labelSelector:
+            matchLabels:
+              {{- include "groupbridge.selectorLabels" $ | nindent 14 }}
+        {{- end }}
+      {{- end }}

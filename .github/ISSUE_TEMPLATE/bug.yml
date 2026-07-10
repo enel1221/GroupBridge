@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible GroupBridge defect
+title: "bug: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include tokens, secrets, email addresses, API response bodies, or private kubeconfigs. Report security issues privately as described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: GroupBridge version
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: platforms
+    attributes:
+      label: Keycloak, GitLab, and Kubernetes versions
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Redact identities and credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or configuration
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed credentials and personally identifiable information.
+          required: true
+        - label: This is not a private security vulnerability report.
+          required: true

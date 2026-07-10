@@ -1,0 +1,38 @@
+server:
+  address: ":8080"
+  shutdownTimeout: 10s
+webhook:
+  secretEnv: GROUPBRIDGE_WEBHOOK_SECRET
+  maxSkew: 5m
+source:
+  type: keycloak
+  baseURL: https://keycloak.example.com
+  realm: engineering
+  clientID: groupbridge
+  clientSecretEnv: GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET
+  pollInterval: 30s
+targets:
+  - name: gitlab-main
+    type: gitlab
+    baseURL: https://gitlab.example.com
+    tokenEnv: GROUPBRIDGE_GITLAB_TOKEN
+    resolverTokenEnv: GROUPBRIDGE_GITLAB_RESOLVER_TOKEN
+    oidcProvider: openid_connect
+rules:
+  - name: engineering-groups
+    sourceGroupPrefix: /gitlab
+    targetProvider: gitlab-main
+    targetParent: platform
+    createGroups: false
+    adoptExistingGroup: false
+    accessLevel: developer
+    prune: managed-only
+    protectedUsers:
+      - root
+      - breakglass-admin
+    maxRemovals: 10
+    identityMatch:
+      - oidc
+    enforceAccessLevel: false
+state:
+  path: /var/lib/groupbridge/state.json

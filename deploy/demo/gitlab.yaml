@@ -1,0 +1,183 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab
+  namespace: groupbridge-demo
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/part-of: groupbridge-demo
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: gitlab
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30081
+    - name: ssh
+      port: 22
+      targetPort: ssh
+      nodePort: 30022
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gitlab
+  namespace: groupbridge-demo
+  labels:
+    app.kubernetes.io/name: gitlab
+    app.kubernetes.io/part-of: groupbridge-demo
+spec:
+  serviceName: gitlab
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitlab
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitlab
+        app.kubernetes.io/part-of: groupbridge-demo
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gitlab
+          image: gitlab/gitlab-ce:19.1.2-ce.0@sha256:ed48f1d320841a393c3b8c3a9558f28117a4ebdbb35538b43a73467aabd9590a
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: true
+          env:
+            - name: GROUPBRIDGE_DEMO_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: demo-credentials
+                  key: demo-host
+            - name: GITLAB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: demo-credentials
+                  key: gitlab-root-password
+            - name: GITLAB_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: demo-credentials
+                  key: gitlab-oidc-client-secret
+            - name: GITLAB_OMNIBUS_CONFIG
+              value: |
+                external_url "http://#{ENV.fetch('GROUPBRIDGE_DEMO_HOST')}:8081"
+                letsencrypt['enable'] = false
+                nginx['listen_https'] = false
+                nginx['listen_port'] = 80
+                gitlab_rails['gitlab_shell_ssh_port'] = 2222
+                gitlab_rails['initial_root_password'] = ENV.fetch('GITLAB_ROOT_PASSWORD')
+                prometheus_monitoring['enable'] = false
+                alertmanager['enable'] = false
+                node_exporter['enable'] = false
+                redis_exporter['enable'] = false
+                postgres_exporter['enable'] = false
+                gitlab_exporter['enable'] = false
+                gitlab_kas['enable'] = false
+                puma['worker_processes'] = 0
+                sidekiq['concurrency'] = 10
+                gitlab_rails['omniauth_enabled'] = true
+                gitlab_rails['omniauth_allow_single_sign_on'] = ['openid_connect']
+                gitlab_rails['omniauth_block_auto_created_users'] = false
+                gitlab_rails['omniauth_auto_link_user'] = ['openid_connect']
+                gitlab_rails['omniauth_providers'] = [
+                  {
+                    name: 'openid_connect',
+                    label: 'Keycloak',
+                    args: {
+                      name: 'openid_connect',
+                      scope: ['openid', 'profile', 'email'],
+                      response_type: 'code',
+                      issuer: "http://#{ENV.fetch('GROUPBRIDGE_DEMO_HOST')}:8080/realms/groupbridge",
+                      discovery: true,
+                      client_auth_method: 'query',
+                      uid_field: 'sub',
+                      pkce: true,
+                      client_options: {
+                        identifier: 'gitlab',
+                        secret: ENV.fetch('GITLAB_OIDC_CLIENT_SECRET'),
+                        redirect_uri: "http://#{ENV.fetch('GROUPBRIDGE_DEMO_HOST')}:8081/users/auth/openid_connect/callback"
+                      }
+                    }
+                  }
+                ]
+          ports:
+            - name: http
+              containerPort: 80
+            - name: ssh
+              containerPort: 22
+          startupProbe:
+            exec:
+              command:
+                - /opt/gitlab/embedded/bin/curl
+                - --fail
+                - --silent
+                - --show-error
+                - --max-time
+                - "5"
+                - http://127.0.0.1/-/readiness
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 180
+          readinessProbe:
+            exec:
+              command:
+                - /opt/gitlab/embedded/bin/curl
+                - --fail
+                - --silent
+                - --show-error
+                - --max-time
+                - "5"
+                - http://127.0.0.1/-/readiness
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command:
+                - /opt/gitlab/embedded/bin/curl
+                - --fail
+                - --silent
+                - --show-error
+                - --max-time
+                - "5"
+                - http://127.0.0.1/-/liveness
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 5Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/opt/gitlab
+            - name: config
+              mountPath: /etc/gitlab
+            - name: logs
+              mountPath: /var/log/gitlab
+      volumes:
+        - name: config
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+      terminationGracePeriodSeconds: 60
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 20Gi
