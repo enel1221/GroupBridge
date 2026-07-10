@@ -19,7 +19,7 @@ wait_for() {
   local description="$1"
   local check="$2"
   local deadline=$((SECONDS + 180))
-  until eval "${check}"; do
+  until "${check}"; do
     (( SECONDS < deadline )) || die "timed out waiting for ${description}"
     sleep 2
   done
@@ -27,11 +27,15 @@ wait_for() {
 
 api="http://${DEMO_HOST}:8081/api/v4"
 gitlab_get() { curl --fail --silent --show-error --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" "$@"; }
+group_exists() {
+  group_json="$(gitlab_get "${api}/groups/developers" 2>/dev/null)" || return 1
+  [[ "$(jq -r .id <<<"${group_json}")" != null ]]
+}
 
 log "Waiting for GroupBridge and the /developers GitLab group"
 kubectl -n "${NAMESPACE}" rollout status deployment/groupbridge --timeout=5m
-wait_for "GitLab developers group" \
-  'group_json="$(gitlab_get "${api}/groups/developers" 2>/dev/null)" && [[ "$(jq -r .id <<<"${group_json}")" != null ]]'
+group_json=""
+wait_for "GitLab developers group" group_exists
 group_id="$(jq -r .id <<<"${group_json}")"
 
 user_id="$(kc get users -r groupbridge -q "username=${DEMO_USERNAME}" --fields id --format csv --noquotes | tr -d '\r' | head -n1)"
@@ -42,14 +46,15 @@ has_direct_member() {
   gitlab_get "${api}/groups/${group_id}/members?per_page=100" | \
     jq -e --arg username "${DEMO_USERNAME}" 'any(.[]; .username == $username)' >/dev/null
 }
+lacks_direct_member() { ! has_direct_member; }
 
-wait_for "initial GitLab membership" 'has_direct_member'
+wait_for "initial GitLab membership" has_direct_member
 log "Removing ${DEMO_USERNAME} from Keycloak; two complete snapshots are required before prune"
 kc delete "users/${user_id}/groups/${group_source_id}" -r groupbridge >/dev/null
-wait_for "GitLab membership removal" '! has_direct_member'
+wait_for "GitLab membership removal" lacks_direct_member
 
 log "Restoring the Keycloak membership"
 kc update "users/${user_id}/groups/${group_source_id}" -r groupbridge -n >/dev/null
-wait_for "GitLab membership restoration" 'has_direct_member'
+wait_for "GitLab membership restoration" has_direct_member
 
 log "End-to-end membership removal and restoration passed"
