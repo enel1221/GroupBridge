@@ -18,7 +18,33 @@
     "imagePullSecrets": { "type": "array" },
     "nameOverride": { "type": "string" },
     "fullnameOverride": { "type": "string" },
-    "serviceAccount": { "type": "object" },
+    "deploymentAnnotations": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "automountServiceAccountToken", "annotations", "name", "vaultToken"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "automountServiceAccountToken": { "const": false },
+        "annotations": { "type": "object" },
+        "name": { "type": "string" },
+        "vaultToken": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "audience", "expirationSeconds", "mountPath", "fileName"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "audience": { "type": "string", "minLength": 1 },
+            "expirationSeconds": { "type": "integer", "minimum": 600, "maximum": 86400 },
+            "mountPath": { "type": "string", "pattern": "^/" },
+            "fileName": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" }
+          }
+        }
+      }
+    },
     "podAnnotations": { "type": "object" },
     "podLabels": { "type": "object" },
     "podSecurityContext": { "type": "object" },

@@ -100,14 +100,18 @@ func (c *Client) SyncGroup(ctx context.Context, req model.SyncRequest) (result m
 		return result, err
 	}
 	result.CreatedGroup = created
-	mapping, mapped := c.state.Group(c.ownershipKey, req.RuleName, req.SourceGroup.ID)
+	stateKey := req.StateKey
+	if stateKey == "" {
+		stateKey = req.SourceGroup.ID
+	}
+	mapping, mapped := c.state.Group(c.ownershipKey, req.RuleName, stateKey)
 	if mapped && (mapping.TargetGroupID != strconv.Itoa(target.ID) || mapping.TargetGroupPath != target.FullPath) {
 		return result, fmt.Errorf("source group %q was previously bound to GitLab group %q (%s); refusing retarget to %q (%d)", req.SourceGroup.ID, mapping.TargetGroupPath, mapping.TargetGroupID, target.FullPath, target.ID)
 	}
 	if !mapped {
 		mapping = state.GroupMapping{
 			Provider: c.ownershipKey, Rule: req.RuleName,
-			SourceGroupID: req.SourceGroup.ID, SourceGroupPath: req.SourceGroup.Path,
+			SourceGroupID: stateKey, SourceNativeID: req.SourceGroup.ID, SourceGroupPath: req.SourceGroup.Path,
 			TargetGroupID: strconv.Itoa(target.ID), TargetGroupPath: target.FullPath,
 			Owned: created || req.AdoptExistingGroup,
 		}
@@ -115,6 +119,7 @@ func (c *Client) SyncGroup(ctx context.Context, req model.SyncRequest) (result m
 		mapping.Owned = true
 	}
 	mapping.SourceGroupPath = req.SourceGroup.Path
+	mapping.SourceNativeID = req.SourceGroup.ID
 	if req.Prune == "authoritative" && !mapping.Owned {
 		return result, fmt.Errorf("authoritative prune requires a GroupBridge-created group or adoptExistingGroup=true for %q", target.FullPath)
 	}
@@ -217,9 +222,13 @@ func (c *Client) SyncGroup(ctx context.Context, req model.SyncRequest) (result m
 		}
 		managed := c.state.IsManaged(c.ownershipKey, strconv.Itoa(target.ID), strconv.Itoa(current.ID))
 		if req.Prune == "authoritative" || (req.Prune == "managed-only" && managed) {
-			confirmed, confirmErr := c.state.ConfirmAbsent(c.ownershipKey, strconv.Itoa(target.ID), strconv.Itoa(current.ID))
-			if confirmErr != nil {
-				return result, fmt.Errorf("confirm absent GitLab membership: %w", confirmErr)
+			confirmed := req.ImmediateRemoval
+			if !confirmed {
+				var confirmErr error
+				confirmed, confirmErr = c.state.ConfirmAbsent(c.ownershipKey, strconv.Itoa(target.ID), strconv.Itoa(current.ID))
+				if confirmErr != nil {
+					return result, fmt.Errorf("confirm absent GitLab membership: %w", confirmErr)
+				}
 			}
 			if !confirmed {
 				result.SkippedRemoval++

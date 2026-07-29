@@ -22,6 +22,7 @@ type GroupMapping struct {
 	Provider        string `json:"provider"`
 	Rule            string `json:"rule"`
 	SourceGroupID   string `json:"sourceGroupId"`
+	SourceNativeID  string `json:"sourceNativeId,omitempty"`
 	SourceGroupPath string `json:"sourceGroupPath"`
 	TargetGroupID   string `json:"targetGroupId"`
 	TargetGroupPath string `json:"targetGroupPath"`
@@ -77,7 +78,7 @@ func Open(path string) (*Store, error) {
 		s.Close()
 		return nil, fmt.Errorf("decode state: %w", err)
 	}
-	if data.Version != 2 {
+	if data.Version != 2 && data.Version != 3 {
 		s.Close()
 		return nil, fmt.Errorf("unsupported state version %d", data.Version)
 	}
@@ -200,6 +201,48 @@ func (s *Store) DeleteGroup(provider, rule, sourceGroupID string) error {
 	return nil
 }
 
+// MoveGroup atomically rekeys a legacy UUID-keyed source mapping to its
+// GitOps-declared canonical path. Membership ownership records are independent
+// of this key and remain untouched.
+func (s *Store) MoveGroup(provider, rule, oldSourceGroupID, newSourceGroupID, nativeID, sourcePath string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	oldKey := groupKey(provider, rule, oldSourceGroupID)
+	newKey := groupKey(provider, rule, newSourceGroupID)
+	mapping, exists := s.groups[oldKey]
+	if !exists {
+		return errors.New("legacy source-group mapping does not exist")
+	}
+	if existing, collision := s.groups[newKey]; collision {
+		if existing.TargetGroupID == mapping.TargetGroupID && existing.TargetGroupPath == mapping.TargetGroupPath {
+			previousExisting := existing
+			existing.SourceNativeID = nativeID
+			existing.SourceGroupPath = sourcePath
+			s.groups[newKey] = existing
+			delete(s.groups, oldKey)
+			if err := s.saveLocked(); err != nil {
+				s.groups[oldKey] = mapping
+				s.groups[newKey] = previousExisting
+				return err
+			}
+			return nil
+		}
+		return errors.New("canonical source-group mapping already exists with a different target")
+	}
+	delete(s.groups, oldKey)
+	previous := mapping
+	mapping.SourceGroupID = newSourceGroupID
+	mapping.SourceNativeID = nativeID
+	mapping.SourceGroupPath = sourcePath
+	s.groups[newKey] = mapping
+	if err := s.saveLocked(); err != nil {
+		delete(s.groups, newKey)
+		s.groups[oldKey] = previous
+		return err
+	}
+	return nil
+}
+
 // ConfirmAbsent returns true only after the same missing membership has been
 // observed in two complete reconciliation snapshots.
 func (s *Store) ConfirmAbsent(provider, groupID, userID string) (bool, error) {
@@ -239,7 +282,7 @@ func (s *Store) ResetAbsent(provider, groupID, userID string) error {
 }
 
 func (s *Store) saveLocked() error {
-	data := diskState{Version: 2, Memberships: make([]Membership, 0, len(s.records)), GroupMappings: make([]GroupMapping, 0, len(s.groups)), Absences: make([]Absence, 0, len(s.absences))}
+	data := diskState{Version: 3, Memberships: make([]Membership, 0, len(s.records)), GroupMappings: make([]GroupMapping, 0, len(s.groups)), Absences: make([]Absence, 0, len(s.absences))}
 	for _, m := range s.records {
 		data.Memberships = append(data.Memberships, m)
 	}

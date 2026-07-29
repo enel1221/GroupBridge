@@ -7,11 +7,24 @@ import (
 	"github.com/enel1221/GroupBridge/internal/model"
 )
 
-// Provider converges a single source group into its native target model.
+// Provider is the common lifecycle surface implemented by compiled providers.
 type Provider interface {
 	Name() string
 	HealthCheck(context.Context) error
+}
+
+// GroupSyncProvider converges direct user membership. GitLab implements this
+// capability; access-native targets do not pretend to.
+type GroupSyncProvider interface {
+	Provider
 	SyncGroup(context.Context, model.SyncRequest) (model.Result, error)
+}
+
+// AccessProvider converges group-claim-backed access objects without
+// provisioning target users.
+type AccessProvider interface {
+	Provider
+	SyncAccessGroup(context.Context, model.AccessSyncRequest) (model.AccessResult, error)
 }
 
 // Registry keeps provider construction explicit and auditable.

@@ -18,9 +18,21 @@ targets:
     tokenEnv: GROUPBRIDGE_GITLAB_TOKEN
     resolverTokenEnv: GROUPBRIDGE_GITLAB_RESOLVER_TOKEN
     oidcProvider: openid_connect
+  - name: vault-main
+    type: vault
+    baseURL: https://vault.example.com
+    oidcMount: oidc
+    kvMount: orgs
+    kubernetesAuth:
+      mount: kubernetes
+      role: groupbridge
+      tokenFile: /var/run/secrets/tokens/vault
 rules:
   - name: engineering-groups
-    sourceGroupPrefix: /gitlab
+    sourceGroupPrefix: /Internal
+    sourceGroupPaths:
+      - /Internal/CCMO
+      - /Internal/CCMO/J6
     targetProvider: gitlab-main
     targetParent: platform
     createGroups: false
@@ -34,5 +46,18 @@ rules:
     identityMatch:
       - oidc
     enforceAccessLevel: false
+  - name: engineering-vault
+    sourceGroupPrefix: /Internal
+    sourceGroupPaths:
+      - /Internal/CCMO
+      - /Internal/CCMO/J6
+    targetProvider: vault-main
+    prune: none
+    vault:
+      pathPrefix: internal
+      accessProfile: editor
+      policyMode: verify-only
+      # Opt-in: LIST on metadata ancestors exposes sibling key names.
+      discoverable: false
 state:
   path: /var/lib/groupbridge/state.json

@@ -5,7 +5,7 @@
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](go.mod)
 
 GroupBridge is a small identity access controller that makes Keycloak group membership
-the source of truth for GitLab direct group membership. It is written in Go, with one
+the source of truth for GitLab direct membership and Vault organization access. It is written in Go, with one
 optional dependency-free Keycloak Java listener for low-latency change hints.
 
 Events make it fast; reconciliation makes it correct. Every webhook causes GroupBridge
@@ -23,6 +23,8 @@ contract is intentionally small so future providers do not have to imitate GitLa
 - refuses removal batches above a configured circuit breaker;
 - accepts timestamped, replay-protected HMAC event hints and also polls on a fixed interval;
 - runs without Kubernetes API credentials in a restricted, single-replica Helm Deployment;
+- verifies GitOps-owned Vault external groups and exact Keycloak full-path OIDC group aliases;
+- verifies GitOps-owned, per-organization KV v2 policies and never accesses secret data;
 - provides a complete Keycloak + GitLab CE + GroupBridge k3d demo.
 
 “1:1” means direct Keycloak group membership to direct GitLab group membership. GitLab
@@ -145,6 +147,14 @@ Group `/gitlab/payments/developers` maps to
 parent explicitly permits top-level creation on self-managed GitLab and is unsuitable
 for GitLab.com.
 
+`sourceGroupPaths` is an optional exact GitOps intent list. When present,
+GroupBridge ignores undeclared Keycloak groups and uses each canonical full path as the
+durable state key. A declared path that is temporarily absent during a Keycloak rebuild
+is held rather than pruned; removing the path from Git triggers immediate managed-only
+GitLab membership retirement. Argo/VCO separately retires GitOps-owned Vault objects.
+This is the recommended mode when one organization catalog renders Keycloak groups,
+GitLab configuration, and Vault policies.
+
 Prune modes are:
 
 - `none`: additive only;
@@ -178,6 +188,49 @@ mutation token; constrain and rotate both carefully.
 The controller reads `/groups/:id/members`, not effective membership. Every deletion
 sets `skip_subresources=true` and `unassign_issuables=false`, so it cannot cascade into
 descendant projects or groups.
+
+### Vault
+
+Vault rules verify external identity groups and aliases for the configured OIDC auth
+mount. The Vault client's Keycloak group-membership mapper writes each user's direct,
+full Keycloak group paths to the dedicated `vault_groups` claim. GitOps maps each exact
+source path (for example, `/Internal/CCMO/J6`) to a Vault external-group alias. This
+avoids inherited parent-group role mappings accidentally granting a child organization
+its parent's policy. Vault resolves people during OIDC login and token renewal;
+GroupBridge never creates Vault entities or copies individual users.
+
+The configured mount must already be KV v2. For a canonical secret path such as
+`internal/ccmo`, GitOps must create the deterministic policy
+`groupbridge-org-internal-ccmo-<first-8-hex-of-sha256("internal/ccmo")>`.
+GroupBridge reads and exactly verifies that policy, external group, stable metadata,
+attached policy, and full-path alias. Deterministic names identify the Vault policy and
+external group; the alias name is always the exact Keycloak source path. GroupBridge
+has no identity mutation, policy-write, or secret-data permission.
+
+`viewer` permits reads; `editor` permits create, read, update, patch, and soft delete.
+Both list only the exact organization metadata path and its descendants by default.
+`discoverable: true` also grants list-only ancestor metadata paths so the Vault UI can
+navigate to the organization. Vault LIST responses are unfiltered, so this opt-in can
+expose sibling key or folder names.
+
+Use Vault Kubernetes auth with the chart's explicit audience-scoped token:
+
+```yaml
+serviceAccount:
+  automountServiceAccountToken: false
+  vaultToken:
+    enabled: true
+    audience: vault
+    mountPath: /var/run/secrets/tokens
+    fileName: vault
+```
+
+The Vault role should permit only exact mount-discovery probe paths, reads of compiled
+policies and external groups by deterministic name, and the exact read-like
+`identity/lookup/group` operation needed to validate the OIDC alias. Explicitly deny
+reads of the auth and secret-mount configuration paths. It must not permit identity
+mutation, policy writes, secret data access, entity/token/auth/mount administration, or
+any delete operation. Validate the read-only policy against the deployed Vault version.
 
 ## Operate and troubleshoot
 

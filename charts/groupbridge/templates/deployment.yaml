@@ -4,6 +4,10 @@ metadata:
   name: {{ include "groupbridge.fullname" . }}
   labels:
     {{- include "groupbridge.labels" . | nindent 4 }}
+  {{- with .Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -92,6 +96,11 @@ spec:
             - name: state
               mountPath: /var/lib/groupbridge
             {{- end }}
+            {{- if .Values.serviceAccount.vaultToken.enabled }}
+            - name: vault-token
+              mountPath: {{ .Values.serviceAccount.vaultToken.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -109,6 +118,18 @@ spec:
         - name: state
           persistentVolumeClaim:
             claimName: {{ default (include "groupbridge.fullname" .) .Values.persistence.existingClaim }}
+        {{- end }}
+        {{- if .Values.serviceAccount.vaultToken.enabled }}
+        - name: vault-token
+          projected:
+            # The pod runs as a non-root user and fsGroup supplies group-read
+            # access without making the short-lived token world-readable.
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.serviceAccount.vaultToken.audience | quote }}
+                  expirationSeconds: {{ .Values.serviceAccount.vaultToken.expirationSeconds }}
+                  path: {{ .Values.serviceAccount.vaultToken.fileName | quote }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

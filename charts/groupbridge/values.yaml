@@ -11,12 +11,21 @@ image:
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
+deploymentAnnotations: {}
 
 serviceAccount:
   create: true
   automountServiceAccountToken: false
   annotations: {}
   name: ""
+  # Vault Kubernetes auth uses an explicit audience-scoped projected token.
+  # This does not grant Kubernetes API RBAC and leaves automount disabled.
+  vaultToken:
+    enabled: false
+    audience: vault
+    expirationSeconds: 3600
+    mountPath: /var/run/secrets/tokens
+    fileName: vault
 
 podAnnotations:
   prometheus.io/scrape: "true"

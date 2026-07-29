@@ -19,6 +19,7 @@ import (
 	"github.com/enel1221/GroupBridge/internal/metrics"
 	"github.com/enel1221/GroupBridge/internal/provider"
 	"github.com/enel1221/GroupBridge/internal/provider/gitlab"
+	vaultprovider "github.com/enel1221/GroupBridge/internal/provider/vault"
 	"github.com/enel1221/GroupBridge/internal/reconcile"
 	"github.com/enel1221/GroupBridge/internal/source/keycloak"
 	"github.com/enel1221/GroupBridge/internal/state"
@@ -82,12 +83,12 @@ func run() error {
 	src := keycloak.New(cfg.Source.BaseURL, cfg.Source.Realm, cfg.Source.ClientID, keycloakSecret, httpClient)
 	providers := make([]provider.Provider, 0, len(cfg.Targets))
 	for _, target := range cfg.Targets {
-		token, secretErr := config.Secret(target.TokenEnv)
-		if secretErr != nil {
-			return secretErr
-		}
 		switch target.Type {
 		case "gitlab":
+			token, secretErr := config.Secret(target.TokenEnv)
+			if secretErr != nil {
+				return secretErr
+			}
 			resolverToken := token
 			if target.ResolverTokenEnv != "" {
 				resolverToken, secretErr = config.Secret(target.ResolverTokenEnv)
@@ -96,6 +97,14 @@ func run() error {
 				}
 			}
 			providers = append(providers, gitlab.New(target.Name, target.BaseURL, token, resolverToken, target.OIDCProvider, httpClient, store))
+		case "vault":
+			providers = append(providers, vaultprovider.New(target.Name, target.BaseURL, vaultprovider.Options{
+				KubernetesAuthMount:     target.KubernetesAuth.Mount,
+				KubernetesRole:          target.KubernetesAuth.Role,
+				ServiceAccountTokenFile: target.KubernetesAuth.TokenFile,
+				OIDCMount:               target.OIDCMount,
+				KVMount:                 target.KVMount,
+			}, httpClient))
 		default:
 			return fmt.Errorf("target provider type %q is not compiled in", target.Type)
 		}

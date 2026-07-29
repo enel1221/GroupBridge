@@ -8,15 +8,17 @@ import (
 )
 
 type Metrics struct {
-	Reconciles         atomic.Uint64
-	ReconcileErrors    atomic.Uint64
-	WebhookAccepted    atomic.Uint64
-	WebhookRejected    atomic.Uint64
-	GroupsCreated      atomic.Uint64
-	MembershipsAdded   atomic.Uint64
-	MembershipsChanged atomic.Uint64
-	MembershipsRemoved atomic.Uint64
-	UnresolvedUsers    atomic.Uint64
+	Reconciles             atomic.Uint64
+	ReconcileErrors        atomic.Uint64
+	WebhookAccepted        atomic.Uint64
+	WebhookRejected        atomic.Uint64
+	GroupsCreated          atomic.Uint64
+	MembershipsAdded       atomic.Uint64
+	MembershipsChanged     atomic.Uint64
+	MembershipsRemoved     atomic.Uint64
+	UnresolvedUsers        atomic.Uint64
+	AccessPoliciesVerified atomic.Uint64
+	ProviderHealthErrors   atomic.Uint64
 }
 
 func (m *Metrics) WritePrometheus(w io.Writer) {
@@ -32,4 +34,6 @@ func (m *Metrics) WritePrometheus(w io.Writer) {
 	write("groupbridge_memberships_changed_total", "Target membership access levels changed.", m.MembershipsChanged.Load())
 	write("groupbridge_memberships_removed_total", "Target memberships removed.", m.MembershipsRemoved.Load())
 	write("groupbridge_unresolved_users_total", "Source users not yet resolvable at a target.", m.UnresolvedUsers.Load())
+	write("groupbridge_access_policies_verified_total", "GitOps-owned target access policies verified.", m.AccessPoliciesVerified.Load())
+	write("groupbridge_provider_health_errors_total", "Target provider health checks that failed.", m.ProviderHealthErrors.Load())
 }

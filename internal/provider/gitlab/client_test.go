@@ -186,3 +186,57 @@ func TestAuthoritativePruneRequiresOwnedOrAdoptedGroup(t *testing.T) {
 		t.Fatal("expected authoritative adoption error")
 	}
 }
+
+func TestCanonicalStateKeyHandlesUUIDChurnAndImmediateDeclaredRemoval(t *testing.T) {
+	deleted := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(user{ID: 99})
+	})
+	mux.HandleFunc("/api/v4/groups/internal%2Fccmo", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(group{ID: 7, FullPath: "internal/ccmo"})
+	})
+	mux.HandleFunc("/api/v4/groups/7/members", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode([]member{{ID: 2, Username: "stale", AccessLevel: 30}})
+	})
+	mux.HandleFunc("/api/v4/groups/7/members/2", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete ||
+			r.URL.Query().Get("skip_subresources") != "true" ||
+			r.URL.Query().Get("unassign_issuables") != "false" {
+			t.Fatalf("unsafe declared removal: %s %s", r.Method, r.URL.String())
+		}
+		deleted++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	store, _ := state.Open(filepath.Join(t.TempDir(), "state.json"))
+	client := New("gitlab", srv.URL, "token", "resolver", "openid_connect", srv.Client(), store)
+	if err := store.PutGroup(state.GroupMapping{
+		Provider: client.ownershipKey, Rule: "orgs", SourceGroupID: "/Internal/CCMO",
+		SourceNativeID: "old-uuid", SourceGroupPath: "/Internal/CCMO",
+		TargetGroupID: "7", TargetGroupPath: "internal/ccmo", Owned: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkManaged(client.ownershipKey, "7", "2"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.SyncGroup(context.Background(), model.SyncRequest{
+		RuleName: "orgs", StateKey: "/Internal/CCMO",
+		SourceGroup: model.Group{ID: "new-uuid", Path: "/Internal/CCMO"},
+		TargetPath:  "internal/ccmo", TargetParent: "internal",
+		AccessLevel: "developer", Prune: "managed-only", MaxRemovals: 10,
+		IdentityMatch: []string{"username"}, ImmediateRemoval: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Removed != 1 || deleted != 1 {
+		t.Fatalf("declared removal result=%+v deleted=%d", result, deleted)
+	}
+	mapping, ok := store.Group(client.ownershipKey, "orgs", "/Internal/CCMO")
+	if !ok || mapping.SourceNativeID != "new-uuid" || mapping.TargetGroupID != "7" {
+		t.Fatalf("canonical mapping after UUID churn = %+v, %t", mapping, ok)
+	}
+}
