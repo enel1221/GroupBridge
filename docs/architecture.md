@@ -56,6 +56,11 @@ The first release uses an atomically replaced JSON ownership ledger on a PVC. It
 deliberately single-writer and the chart fixes the operational model at one replica.
 Webhook hints are lossy; the periodic full scan is the durability mechanism.
 
+Provider credentials may be environment-backed for compatibility or file-backed for
+rotation. File-backed loaders reopen the configured absolute path for every Keycloak
+token request and GitLab API request. Kubernetes Secret volumes must be mounted as
+directories rather than `subPath` files so kubelet's atomic symlink swap is observable.
+
 The multi-replica design boundary is a PostgreSQL-backed dirty-key queue and ownership
 store with row locking. Webhook receivers and workers can then be active-active while a
 lease or database advisory lock elects one periodic scanner. That feature must land

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ type Source struct {
 	Realm             string   `yaml:"realm"`
 	ClientID          string   `yaml:"clientID"`
 	ClientSecretEnv   string   `yaml:"clientSecretEnv"`
+	ClientSecretFile  string   `yaml:"clientSecretFile"`
 	PollInterval      Duration `yaml:"pollInterval"`
 }
 
@@ -49,7 +51,9 @@ type Target struct {
 	BaseURL           string              `yaml:"baseURL"`
 	AllowInsecureHTTP bool                `yaml:"allowInsecureHTTP"`
 	TokenEnv          string              `yaml:"tokenEnv"`
+	TokenFile         string              `yaml:"tokenFile"`
 	ResolverTokenEnv  string              `yaml:"resolverTokenEnv"`
+	ResolverTokenFile string              `yaml:"resolverTokenFile"`
 	OIDCProvider      string              `yaml:"oidcProvider"`
 	OIDCMount         string              `yaml:"oidcMount"`
 	KVMount           string              `yaml:"kvMount"`
@@ -117,6 +121,11 @@ func Decode(r io.Reader) (Config, error) {
 	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
+	// Preserve the legacy implicit environment source while allowing a
+	// file-only source to opt out without also spelling clientSecretEnv: "".
+	if c.Source.ClientSecretEnv == "" && c.Source.ClientSecretFile == "" {
+		c.Source.ClientSecretEnv = "GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET"
+	}
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -127,7 +136,7 @@ func defaults() Config {
 	return Config{
 		Server:  Server{Address: ":8080", ShutdownTimeout: Duration{10 * time.Second}},
 		Webhook: Webhook{SecretEnv: "GROUPBRIDGE_WEBHOOK_SECRET", MaxSkew: Duration{5 * time.Minute}},
-		Source:  Source{Type: "keycloak", ClientSecretEnv: "GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET", PollInterval: Duration{30 * time.Second}},
+		Source:  Source{Type: "keycloak", PollInterval: Duration{30 * time.Second}},
 		State:   State{Path: "/var/lib/groupbridge/state.json"},
 	}
 }
@@ -146,8 +155,14 @@ func (c Config) Validate() error {
 	if c.Source.Type != "keycloak" {
 		errs = append(errs, fmt.Errorf("source.type must be keycloak, got %q", c.Source.Type))
 	}
-	if c.Source.BaseURL == "" || c.Source.Realm == "" || c.Source.ClientID == "" || c.Source.ClientSecretEnv == "" {
-		errs = append(errs, errors.New("source.baseURL, realm, clientID, and clientSecretEnv are required"))
+	if c.Source.BaseURL == "" || c.Source.Realm == "" || c.Source.ClientID == "" {
+		errs = append(errs, errors.New("source.baseURL, realm, and clientID are required"))
+	}
+	if err := validateCredentialReference(
+		c.Source.ClientSecretEnv, c.Source.ClientSecretFile,
+		"source.clientSecretEnv", "source.clientSecretFile", true,
+	); err != nil {
+		errs = append(errs, err)
 	}
 	if err := validateBaseURL(c.Source.BaseURL, c.Source.AllowInsecureHTTP); err != nil {
 		errs = append(errs, fmt.Errorf("source.baseURL: %w", err))
@@ -165,15 +180,24 @@ func (c Config) Validate() error {
 		}
 		switch t.Type {
 		case "gitlab":
-			if t.TokenEnv == "" {
-				errs = append(errs, fmt.Errorf("targets[%d] GitLab target requires tokenEnv", i))
+			if err := validateCredentialReference(
+				t.TokenEnv, t.TokenFile,
+				fmt.Sprintf("targets[%d].tokenEnv", i), fmt.Sprintf("targets[%d].tokenFile", i), true,
+			); err != nil {
+				errs = append(errs, err)
+			}
+			if err := validateCredentialReference(
+				t.ResolverTokenEnv, t.ResolverTokenFile,
+				fmt.Sprintf("targets[%d].resolverTokenEnv", i), fmt.Sprintf("targets[%d].resolverTokenFile", i), false,
+			); err != nil {
+				errs = append(errs, err)
 			}
 			if t.OIDCMount != "" || t.KVMount != "" || t.KubernetesAuth != (VaultKubernetesAuth{}) {
 				errs = append(errs, fmt.Errorf("targets[%d] contains Vault-only fields", i))
 			}
 		case "vault":
-			if t.TokenEnv != "" || t.ResolverTokenEnv != "" {
-				errs = append(errs, fmt.Errorf("targets[%d] Vault target must not use tokenEnv or resolverTokenEnv", i))
+			if t.TokenEnv != "" || t.TokenFile != "" || t.ResolverTokenEnv != "" || t.ResolverTokenFile != "" {
+				errs = append(errs, fmt.Errorf("targets[%d] Vault target must not use tokenEnv, tokenFile, resolverTokenEnv, or resolverTokenFile", i))
 			}
 			if !safeVaultPath(t.OIDCMount) || !safeVaultPath(t.KVMount) || !safeVaultPath(t.KubernetesAuth.Mount) {
 				errs = append(errs, fmt.Errorf("targets[%d] Vault mounts must be a safe mount path", i))
@@ -256,8 +280,9 @@ func (c Config) Validate() error {
 					if match != "oidc" && match != "username" && match != "email" {
 						errs = append(errs, fmt.Errorf("rules[%d].identityMatch contains unsupported value %q", i, match))
 					}
-					if match == "oidc" && (target.OIDCProvider == "" || target.ResolverTokenEnv == "") {
-						errs = append(errs, fmt.Errorf("rules[%d] uses oidc matching but target %q lacks oidcProvider or resolverTokenEnv", i, target.Name))
+					if match == "oidc" && (target.OIDCProvider == "" ||
+						(target.ResolverTokenEnv == "" && target.ResolverTokenFile == "")) {
+						errs = append(errs, fmt.Errorf("rules[%d] uses oidc matching but target %q lacks oidcProvider or resolverTokenEnv/resolverTokenFile", i, target.Name))
 					}
 				}
 			case "vault":
@@ -287,6 +312,24 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("state.path is required"))
 	}
 	return errors.Join(errs...)
+}
+
+func validateCredentialReference(environment, filePath, environmentField, fileField string, required bool) error {
+	if environment != "" && filePath != "" {
+		return fmt.Errorf("%s and %s are mutually exclusive", environmentField, fileField)
+	}
+	if required && environment == "" && filePath == "" {
+		return fmt.Errorf("requires exactly one of %s or %s", environmentField, fileField)
+	}
+	if filePath != "" {
+		if !filepath.IsAbs(filePath) {
+			return fmt.Errorf("%s must be an absolute path", fileField)
+		}
+		if filepath.Clean(filePath) != filePath {
+			return fmt.Errorf("%s must be a canonical path", fileField)
+		}
+	}
+	return nil
 }
 
 var unsafeDeclaredPathChars = regexp.MustCompile(`[^a-z0-9_-]+`)

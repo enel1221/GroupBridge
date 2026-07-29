@@ -9,14 +9,14 @@ source:
   baseURL: https://keycloak.example.com
   realm: engineering
   clientID: groupbridge
-  clientSecretEnv: GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET
+  clientSecretFile: /var/run/secrets/groupbridge/keycloak-client-secret
   pollInterval: 30s
 targets:
   - name: gitlab-main
     type: gitlab
     baseURL: https://gitlab.example.com
-    tokenEnv: GROUPBRIDGE_GITLAB_TOKEN
-    resolverTokenEnv: GROUPBRIDGE_GITLAB_RESOLVER_TOKEN
+    tokenFile: /var/run/secrets/groupbridge/gitlab-token
+    resolverTokenFile: /var/run/secrets/groupbridge/gitlab-resolver-token
     oidcProvider: openid_connect
   - name: vault-main
     type: vault

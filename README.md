@@ -106,8 +106,10 @@ same-namespace ingress NetworkPolicy.
 ## Configure existing instances
 
 Copy [examples/config.yaml](examples/config.yaml) and change the endpoints, realm, path
-prefix, managed GitLab parent, and policy. Secrets are environment-variable references,
-never values in the YAML.
+prefix, managed GitLab parent, and policy. Secrets are references to environment
+variables or absolute files, never values in the YAML. File references are recommended
+in Kubernetes because GroupBridge reopens them when it requests a Keycloak token or
+calls GitLab, so projected Secret rotation does not require a pod restart.
 
 ```yaml
 source:
@@ -115,15 +117,15 @@ source:
   baseURL: https://keycloak.example.com
   realm: engineering
   clientID: groupbridge
-  clientSecretEnv: GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET
+  clientSecretFile: /var/run/secrets/groupbridge/keycloak-client-secret
   pollInterval: 30s
 
 targets:
   - name: gitlab-main
     type: gitlab
     baseURL: https://gitlab.example.com
-    tokenEnv: GROUPBRIDGE_GITLAB_TOKEN
-    resolverTokenEnv: GROUPBRIDGE_GITLAB_RESOLVER_TOKEN
+    tokenFile: /var/run/secrets/groupbridge/gitlab-token
+    resolverTokenFile: /var/run/secrets/groupbridge/gitlab-resolver-token
     oidcProvider: openid_connect
 
 rules:
@@ -140,6 +142,17 @@ rules:
     identityMatch: [oidc]
     enforceAccessLevel: false
 ```
+
+Each provider credential must configure exactly one environment or file field:
+`clientSecretEnv` or `clientSecretFile`, `tokenEnv` or `tokenFile`, and
+`resolverTokenEnv` or `resolverTokenFile`. Environment-based configurations remain
+supported for compatibility, but Kubernetes does not update container environment
+variables when a Secret rotates.
+
+For file-backed chart deployments, set `secret.providerCredentialsMode: files`. The
+chart mounts `secret.existingSecret` at `/var/run/secrets/groupbridge` by default as a
+read-only directory without `subPath`; the non-root pod reads it through the configured
+`fsGroup`. The key filenames come from `secret.keys`.
 
 Group `/gitlab/payments/developers` maps to
 `platform/payments/developers`. `targetParent` must already exist; when

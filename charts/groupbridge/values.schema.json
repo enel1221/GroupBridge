@@ -63,9 +63,11 @@
     "secret": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["existingSecret", "keys"],
+      "required": ["existingSecret", "providerCredentialsMode", "mountPath", "keys"],
       "properties": {
         "existingSecret": { "type": "string", "minLength": 1 },
+        "providerCredentialsMode": { "enum": ["env", "files"] },
+        "mountPath": { "type": "string", "pattern": "^/" },
         "keys": {
           "type": "object",
           "additionalProperties": false,

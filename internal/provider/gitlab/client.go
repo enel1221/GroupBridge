@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/enel1221/GroupBridge/internal/credential"
 	"github.com/enel1221/GroupBridge/internal/model"
 	"github.com/enel1221/GroupBridge/internal/state"
 )
@@ -32,18 +33,29 @@ var accessLevels = map[string]int{
 type Client struct {
 	name          string
 	baseURL       string
-	token         string
-	resolverToken string
+	token         credential.Loader
+	resolverToken credential.Loader
 	oidcProvider  string
 	ownershipKey  string
 	httpClient    *http.Client
 	state         *state.Store
 
-	identityMu sync.Mutex
-	identityID int
+	identityMu        sync.Mutex
+	identityID        int
+	identityTokenHash [sha256.Size]byte
 }
 
 func New(name, baseURL, token, resolverToken, oidcProvider string, httpClient *http.Client, stateStore *state.Store) *Client {
+	return NewWithCredentials(
+		name, baseURL, credential.Static(token), credential.Static(resolverToken),
+		oidcProvider, httpClient, stateStore,
+	)
+}
+
+// NewWithCredentials constructs a GitLab provider whose mutation and resolver
+// tokens are loaded for every request. File-backed credentials therefore see
+// projected-Secret rotation without a pod restart.
+func NewWithCredentials(name, baseURL string, token, resolverToken credential.Loader, oidcProvider string, httpClient *http.Client, stateStore *state.Store) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
@@ -387,7 +399,11 @@ func (c *Client) findUser(ctx context.Context, source model.User, match []string
 		}
 		query.Set("per_page", strconv.Itoa(apiPageSize))
 		var users []user
-		status, _, err := c.requestWithToken(ctx, c.resolverToken, http.MethodGet, "/api/v4/users", query, nil, &users)
+		resolverToken, loadErr := c.resolverToken.Load()
+		if loadErr != nil {
+			return user{}, false, fmt.Errorf("load GitLab resolver credential: %w", loadErr)
+		}
+		status, _, err := c.requestWithToken(ctx, resolverToken, http.MethodGet, "/api/v4/users", query, nil, &users)
 		if err != nil {
 			return user{}, false, err
 		}
@@ -466,11 +482,16 @@ func (c *Client) removeMember(ctx context.Context, groupID, userID int) error {
 func (c *Client) currentIdentity(ctx context.Context) (int, error) {
 	c.identityMu.Lock()
 	defer c.identityMu.Unlock()
-	if c.identityID != 0 {
+	token, err := c.token.Load()
+	if err != nil {
+		return 0, fmt.Errorf("load GitLab mutation credential: %w", err)
+	}
+	tokenHash := sha256.Sum256([]byte(token))
+	if c.identityID != 0 && c.identityTokenHash == tokenHash {
 		return c.identityID, nil
 	}
 	var current user
-	status, _, err := c.request(ctx, http.MethodGet, "/api/v4/user", nil, nil, &current)
+	status, _, err := c.requestWithToken(ctx, token, http.MethodGet, "/api/v4/user", nil, nil, &current)
 	if err != nil {
 		return 0, err
 	}
@@ -478,11 +499,16 @@ func (c *Client) currentIdentity(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("GitLab current-user API returned %s", http.StatusText(status))
 	}
 	c.identityID = current.ID
+	c.identityTokenHash = tokenHash
 	return current.ID, nil
 }
 
 func (c *Client) request(ctx context.Context, method, path string, query url.Values, payload, dst any) (int, http.Header, error) {
-	return c.requestWithToken(ctx, c.token, method, path, query, payload, dst)
+	token, err := c.token.Load()
+	if err != nil {
+		return 0, nil, fmt.Errorf("load GitLab mutation credential: %w", err)
+	}
+	return c.requestWithToken(ctx, token, method, path, query, payload, dst)
 }
 
 func (c *Client) requestWithToken(ctx context.Context, token, method, path string, query url.Values, payload, dst any) (int, http.Header, error) {

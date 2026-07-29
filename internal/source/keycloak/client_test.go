@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/enel1221/GroupBridge/internal/credential"
 )
 
 func TestListGroupsReadsChildrenAndEnabledMembers(t *testing.T) {
@@ -120,6 +124,44 @@ func TestListGroupsPaginatesMoreThanTwoHundredMembers(t *testing.T) {
 	}
 	if len(groups) != 1 || len(groups[0].Members) != 205 {
 		t.Fatalf("groups=%d members=%d", len(groups), len(groups[0].Members))
+	}
+}
+
+func TestClientSecretFileReloadsForEveryTokenRequest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keycloak-client-secret")
+	if err := os.WriteFile(path, []byte("first-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loader, err := credential.New("", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secrets []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		secrets = append(secrets, r.Form.Get("client_secret"))
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": fmt.Sprintf("token-%d", len(secrets)),
+			"expires_in":   300,
+		})
+	}))
+	defer server.Close()
+
+	client := NewWithCredential(server.URL, "demo", "client", loader, server.Client())
+	if _, err := client.token(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("rotated-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client.invalidateToken()
+	if _, err := client.token(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(secrets) != 2 || secrets[0] != "first-secret" || secrets[1] != "rotated-secret" {
+		t.Fatalf("token endpoint secrets = %#v", secrets)
 	}
 }
 
