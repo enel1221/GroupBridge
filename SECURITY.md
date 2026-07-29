@@ -33,6 +33,9 @@ embargo or disclosure date is promised until scope and a fix are understood.
 - TLS verification is on and redirects are refused by both HTTP clients.
 - Secrets must be supplied through referenced environment variables/Kubernetes Secrets
   and are not emitted into logs or metrics.
+- Provider credential references are mutually exclusive. File-backed credentials are
+  size-bounded, reject control characters, and are reopened for every relevant request;
+  errors identify only the source path or environment name, never the value.
 
 Read [docs/architecture.md](docs/architecture.md) before changing identity resolution,
 ownership, prune, event authentication, or GitLab deletion semantics.

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/enel1221/GroupBridge/internal/credential"
 	"github.com/enel1221/GroupBridge/internal/model"
 )
 
@@ -24,7 +25,7 @@ type Client struct {
 	baseURL      string
 	realm        string
 	clientID     string
-	clientSecret string
+	clientSecret credential.Loader
 	httpClient   *http.Client
 
 	mu          sync.Mutex
@@ -33,6 +34,13 @@ type Client struct {
 }
 
 func New(baseURL, realm, clientID, clientSecret string, httpClient *http.Client) *Client {
+	return NewWithCredential(baseURL, realm, clientID, credential.Static(clientSecret), httpClient)
+}
+
+// NewWithCredential constructs a Keycloak source whose client secret is
+// resolved for every token request. File-backed credentials therefore rotate
+// without restarting the controller.
+func NewWithCredential(baseURL, realm, clientID string, clientSecret credential.Loader, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
@@ -210,10 +218,14 @@ func (c *Client) token(ctx context.Context) (string, error) {
 	if c.accessToken != "" && time.Now().Add(30*time.Second).Before(c.tokenExpiry) {
 		return c.accessToken, nil
 	}
+	clientSecret, err := c.clientSecret.Load()
+	if err != nil {
+		return "", fmt.Errorf("load Keycloak client credential: %w", err)
+	}
 	form := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {c.clientID},
-		"client_secret": {c.clientSecret},
+		"client_secret": {clientSecret},
 	}
 	u := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", c.baseURL, url.PathEscape(c.realm))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewBufferString(form.Encode()))

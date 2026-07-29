@@ -50,6 +50,7 @@ spec:
           env:
             - name: GROUPBRIDGE_CONFIG
               value: {{ .Values.config.mountPath | quote }}
+            {{- if eq .Values.secret.providerCredentialsMode "env" }}
             - name: GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -65,6 +66,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secret.existingSecret }}
                   key: {{ .Values.secret.keys.gitlabResolverToken }}
+            {{- end }}
             - name: GROUPBRIDGE_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
@@ -92,6 +94,13 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if eq .Values.secret.providerCredentialsMode "files" }}
+            # Directory mounts observe Kubernetes projected-Secret symlink
+            # swaps. Do not replace this with a subPath mount.
+            - name: provider-credentials
+              mountPath: {{ .Values.secret.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- if .Values.persistence.enabled }}
             - name: state
               mountPath: /var/lib/groupbridge
@@ -114,6 +123,19 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        {{- if eq .Values.secret.providerCredentialsMode "files" }}
+        - name: provider-credentials
+          secret:
+            secretName: {{ .Values.secret.existingSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secret.keys.keycloakClientSecret }}
+                path: {{ .Values.secret.keys.keycloakClientSecret }}
+              - key: {{ .Values.secret.keys.gitlabToken }}
+                path: {{ .Values.secret.keys.gitlabToken }}
+              - key: {{ .Values.secret.keys.gitlabResolverToken }}
+                path: {{ .Values.secret.keys.gitlabResolverToken }}
+        {{- end }}
         {{- if .Values.persistence.enabled }}
         - name: state
           persistentVolumeClaim:

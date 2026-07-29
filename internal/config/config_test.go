@@ -33,7 +33,8 @@ rules:
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if c.Server.Address != ":8080" || c.Source.PollInterval.Duration != 15*time.Second {
+	if c.Server.Address != ":8080" || c.Source.PollInterval.Duration != 15*time.Second ||
+		c.Source.ClientSecretEnv != "GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET" {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
 
@@ -74,6 +75,111 @@ rules: [{name: r, sourceGroupPrefix: /, targetProvider: gl, accessLevel: develop
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}
+	}
+}
+
+func TestDecodeSupportsExclusiveFileBackedProviderCredentials(t *testing.T) {
+	yml := `
+source:
+  type: keycloak
+  baseURL: https://kc
+  realm: r
+  clientID: c
+  clientSecretFile: /var/run/secrets/groupbridge/keycloak-client-secret
+  pollInterval: 1s
+targets:
+  - name: gl
+    type: gitlab
+    baseURL: https://gl
+    tokenFile: /var/run/secrets/groupbridge/gitlab-token
+    resolverTokenFile: /var/run/secrets/groupbridge/gitlab-resolver-token
+    oidcProvider: openid_connect
+rules:
+  - name: r
+    sourceGroupPrefix: /
+    targetProvider: gl
+    accessLevel: developer
+    prune: managed-only
+    identityMatch: [oidc]
+`
+	cfg, err := Decode(strings.NewReader(yml))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if cfg.Source.ClientSecretEnv != "" ||
+		cfg.Source.ClientSecretFile != "/var/run/secrets/groupbridge/keycloak-client-secret" ||
+		cfg.Targets[0].TokenEnv != "" ||
+		cfg.Targets[0].TokenFile != "/var/run/secrets/groupbridge/gitlab-token" ||
+		cfg.Targets[0].ResolverTokenFile != "/var/run/secrets/groupbridge/gitlab-resolver-token" {
+		t.Fatalf("unexpected credential config: source=%+v target=%+v", cfg.Source, cfg.Targets[0])
+	}
+}
+
+func TestDecodeRejectsAmbiguousOrUnsafeProviderCredentialSources(t *testing.T) {
+	tests := map[string]struct {
+		sourceFields string
+		targetFields string
+		want         string
+	}{
+		"source both": {
+			sourceFields: "clientSecretEnv: KEYCLOAK_SECRET\n  clientSecretFile: /secret",
+			targetFields: "tokenEnv: TOKEN",
+			want:         "source.clientSecretEnv and source.clientSecretFile are mutually exclusive",
+		},
+		"gitlab mutation both": {
+			sourceFields: "clientSecretEnv: KEYCLOAK_SECRET",
+			targetFields: "tokenEnv: TOKEN\n    tokenFile: /token",
+			want:         "targets[0].tokenEnv and targets[0].tokenFile are mutually exclusive",
+		},
+		"gitlab mutation neither": {
+			sourceFields: "clientSecretEnv: KEYCLOAK_SECRET",
+			targetFields: "resolverTokenEnv: RESOLVER",
+			want:         "requires exactly one of targets[0].tokenEnv or targets[0].tokenFile",
+		},
+		"gitlab resolver both": {
+			sourceFields: "clientSecretEnv: KEYCLOAK_SECRET",
+			targetFields: "tokenEnv: TOKEN\n    resolverTokenEnv: RESOLVER\n    resolverTokenFile: /resolver",
+			want:         "targets[0].resolverTokenEnv and targets[0].resolverTokenFile are mutually exclusive",
+		},
+		"relative source file": {
+			sourceFields: "clientSecretFile: relative/secret",
+			targetFields: "tokenEnv: TOKEN",
+			want:         "clientSecretFile must be an absolute path",
+		},
+		"relative target file": {
+			sourceFields: "clientSecretEnv: KEYCLOAK_SECRET",
+			targetFields: "tokenFile: relative/token",
+			want:         "tokenFile must be an absolute path",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			yml := `
+source:
+  type: keycloak
+  baseURL: https://kc
+  realm: r
+  clientID: c
+  ` + tt.sourceFields + `
+  pollInterval: 1s
+targets:
+  - name: gl
+    type: gitlab
+    baseURL: https://gl
+    ` + tt.targetFields + `
+rules:
+  - name: r
+    sourceGroupPrefix: /
+    targetProvider: gl
+    accessLevel: developer
+    prune: managed-only
+    identityMatch: [username]
+`
+			_, err := Decode(strings.NewReader(yml))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
 	}
 }
 
@@ -122,6 +228,11 @@ source: {type: keycloak, baseURL: https://kc, realm: r, clientID: c, pollInterva
 targets: [{name: vault, type: vault, baseURL: https://vault, tokenEnv: ROOT_TOKEN, oidcMount: oidc, kvMount: orgs, kubernetesAuth: {mount: kubernetes, role: groupbridge, tokenFile: /token}}]
 rules: [{name: r, sourceGroupPrefix: /Internal, targetProvider: vault, prune: managed-only, vault: {pathPrefix: internal, accessProfile: editor}}]
 `, want: "must not use tokenEnv"},
+		"static token file": {yaml: `
+source: {type: keycloak, baseURL: https://kc, realm: r, clientID: c, pollInterval: 1s}
+targets: [{name: vault, type: vault, baseURL: https://vault, tokenFile: /root-token, resolverTokenFile: /resolver, oidcMount: oidc, kvMount: orgs, kubernetesAuth: {mount: kubernetes, role: groupbridge, tokenFile: /token}}]
+rules: [{name: r, sourceGroupPrefix: /Internal, targetProvider: vault, prune: managed-only, vault: {pathPrefix: internal, accessProfile: editor}}]
+`, want: "must not use tokenEnv, tokenFile, resolverTokenEnv, or resolverTokenFile"},
 		"bad mount": {yaml: `
 source: {type: keycloak, baseURL: https://kc, realm: r, clientID: c, pollInterval: 1s}
 targets: [{name: vault, type: vault, baseURL: https://vault, oidcMount: ../oidc, kvMount: orgs/data, kubernetesAuth: {mount: kubernetes, role: groupbridge, tokenFile: relative}}]

@@ -16,6 +16,7 @@ import (
 
 	"github.com/enel1221/GroupBridge/internal/app"
 	"github.com/enel1221/GroupBridge/internal/config"
+	"github.com/enel1221/GroupBridge/internal/credential"
 	"github.com/enel1221/GroupBridge/internal/metrics"
 	"github.com/enel1221/GroupBridge/internal/provider"
 	"github.com/enel1221/GroupBridge/internal/provider/gitlab"
@@ -56,9 +57,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	keycloakSecret, err := config.Secret(cfg.Source.ClientSecretEnv)
+	keycloakSecret, err := credential.New(cfg.Source.ClientSecretEnv, cfg.Source.ClientSecretFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("configure Keycloak client credential: %w", err)
+	}
+	if _, err := keycloakSecret.Load(); err != nil {
+		return fmt.Errorf("load Keycloak client credential: %w", err)
 	}
 	webhookSecret, err := config.Secret(cfg.Webhook.SecretEnv)
 	if err != nil {
@@ -80,23 +84,31 @@ func run() error {
 		Transport:     transport,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	src := keycloak.New(cfg.Source.BaseURL, cfg.Source.Realm, cfg.Source.ClientID, keycloakSecret, httpClient)
+	src := keycloak.NewWithCredential(cfg.Source.BaseURL, cfg.Source.Realm, cfg.Source.ClientID, keycloakSecret, httpClient)
 	providers := make([]provider.Provider, 0, len(cfg.Targets))
 	for _, target := range cfg.Targets {
 		switch target.Type {
 		case "gitlab":
-			token, secretErr := config.Secret(target.TokenEnv)
+			token, secretErr := credential.New(target.TokenEnv, target.TokenFile)
 			if secretErr != nil {
-				return secretErr
+				return fmt.Errorf("configure GitLab mutation credential for target %q: %w", target.Name, secretErr)
+			}
+			if _, secretErr = token.Load(); secretErr != nil {
+				return fmt.Errorf("load GitLab mutation credential for target %q: %w", target.Name, secretErr)
 			}
 			resolverToken := token
-			if target.ResolverTokenEnv != "" {
-				resolverToken, secretErr = config.Secret(target.ResolverTokenEnv)
+			if target.ResolverTokenEnv != "" || target.ResolverTokenFile != "" {
+				resolverToken, secretErr = credential.New(target.ResolverTokenEnv, target.ResolverTokenFile)
 				if secretErr != nil {
-					return secretErr
+					return fmt.Errorf("configure GitLab resolver credential for target %q: %w", target.Name, secretErr)
+				}
+				if _, secretErr = resolverToken.Load(); secretErr != nil {
+					return fmt.Errorf("load GitLab resolver credential for target %q: %w", target.Name, secretErr)
 				}
 			}
-			providers = append(providers, gitlab.New(target.Name, target.BaseURL, token, resolverToken, target.OIDCProvider, httpClient, store))
+			providers = append(providers, gitlab.NewWithCredentials(
+				target.Name, target.BaseURL, token, resolverToken, target.OIDCProvider, httpClient, store,
+			))
 		case "vault":
 			providers = append(providers, vaultprovider.New(target.Name, target.BaseURL, vaultprovider.Options{
 				KubernetesAuthMount:     target.KubernetesAuth.Mount,

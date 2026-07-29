@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
+	"github.com/enel1221/GroupBridge/internal/credential"
 	"github.com/enel1221/GroupBridge/internal/model"
 	"github.com/enel1221/GroupBridge/internal/state"
 )
@@ -167,6 +169,84 @@ func TestFindUserOIDCRequiresExactIdentityAndResolverToken(t *testing.T) {
 		context.Background(), model.User{ID: "kc-user"}, []string{"oidc"})
 	if err != nil || !ok || found.ID != 2 {
 		t.Fatalf("found=%+v ok=%t err=%v", found, ok, err)
+	}
+}
+
+func TestCredentialFilesReloadForEveryRequestAndRefreshCurrentIdentity(t *testing.T) {
+	dir := t.TempDir()
+	mutationPath := filepath.Join(dir, "gitlab-token")
+	resolverPath := filepath.Join(dir, "gitlab-resolver-token")
+	if err := os.WriteFile(mutationPath, []byte("mutation-one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resolverPath, []byte("resolver-one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mutation, err := credential.New("", mutationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := credential.New("", resolverPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var groupTokens, resolverTokens, identityTokens []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/groups/team", func(w http.ResponseWriter, r *http.Request) {
+		groupTokens = append(groupTokens, r.Header.Get("PRIVATE-TOKEN"))
+		json.NewEncoder(w).Encode(group{ID: 7, FullPath: "team"})
+	})
+	mux.HandleFunc("/api/v4/users", func(w http.ResponseWriter, r *http.Request) {
+		resolverTokens = append(resolverTokens, r.Header.Get("PRIVATE-TOKEN"))
+		json.NewEncoder(w).Encode([]user{{ID: 1, Username: "alice", State: "active"}})
+	})
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("PRIVATE-TOKEN")
+		identityTokens = append(identityTokens, token)
+		id := 1
+		if token == "mutation-two" {
+			id = 2
+		}
+		json.NewEncoder(w).Encode(user{ID: id, Username: "sync-bot", State: "active"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	store, err := state.Open(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewWithCredentials("gitlab", server.URL, mutation, resolver, "openid_connect", server.Client(), store)
+
+	assertRequestCredentials := func(wantIdentity int) {
+		t.Helper()
+		if found, err := client.getGroup(context.Background(), "team"); err != nil || found == nil {
+			t.Fatalf("getGroup() = %+v, %v", found, err)
+		}
+		if _, found, err := client.findUser(context.Background(), model.User{Username: "alice"}, []string{"username"}); err != nil || !found {
+			t.Fatalf("findUser() found=%t err=%v", found, err)
+		}
+		if id, err := client.currentIdentity(context.Background()); err != nil || id != wantIdentity {
+			t.Fatalf("currentIdentity() = %d, %v; want %d", id, err, wantIdentity)
+		}
+	}
+	assertRequestCredentials(1)
+	if err := os.WriteFile(mutationPath, []byte("mutation-two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resolverPath, []byte("resolver-two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertRequestCredentials(2)
+
+	if got := groupTokens; len(got) != 2 || got[0] != "mutation-one" || got[1] != "mutation-two" {
+		t.Fatalf("mutation request tokens = %#v", got)
+	}
+	if got := resolverTokens; len(got) != 2 || got[0] != "resolver-one" || got[1] != "resolver-two" {
+		t.Fatalf("resolver request tokens = %#v", got)
+	}
+	if got := identityTokens; len(got) != 2 || got[0] != "mutation-one" || got[1] != "mutation-two" {
+		t.Fatalf("identity request tokens = %#v", got)
 	}
 }
 

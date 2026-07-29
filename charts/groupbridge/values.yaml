@@ -104,6 +104,10 @@ secret:
   # Creating secrets from Helm values stores credentials in release history.
   # Create this Secret out-of-band and set its name here.
   existingSecret: groupbridge
+  # "files" mounts the Secret as a rotation-aware directory and omits provider
+  # credentials from the process environment. "env" preserves legacy configs.
+  providerCredentialsMode: env
+  mountPath: /var/run/secrets/groupbridge
   keys:
     keycloakClientSecret: keycloak-client-secret
     gitlabToken: gitlab-token
