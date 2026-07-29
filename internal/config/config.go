@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,28 +44,46 @@ type Source struct {
 }
 
 type Target struct {
-	Name              string `yaml:"name"`
-	Type              string `yaml:"type"`
-	BaseURL           string `yaml:"baseURL"`
-	AllowInsecureHTTP bool   `yaml:"allowInsecureHTTP"`
-	TokenEnv          string `yaml:"tokenEnv"`
-	ResolverTokenEnv  string `yaml:"resolverTokenEnv"`
-	OIDCProvider      string `yaml:"oidcProvider"`
+	Name              string              `yaml:"name"`
+	Type              string              `yaml:"type"`
+	BaseURL           string              `yaml:"baseURL"`
+	AllowInsecureHTTP bool                `yaml:"allowInsecureHTTP"`
+	TokenEnv          string              `yaml:"tokenEnv"`
+	ResolverTokenEnv  string              `yaml:"resolverTokenEnv"`
+	OIDCProvider      string              `yaml:"oidcProvider"`
+	OIDCMount         string              `yaml:"oidcMount"`
+	KVMount           string              `yaml:"kvMount"`
+	KubernetesAuth    VaultKubernetesAuth `yaml:"kubernetesAuth"`
+}
+
+type VaultKubernetesAuth struct {
+	Mount     string `yaml:"mount"`
+	Role      string `yaml:"role"`
+	TokenFile string `yaml:"tokenFile"`
 }
 
 type Rule struct {
-	Name               string   `yaml:"name"`
-	SourceGroupPrefix  string   `yaml:"sourceGroupPrefix"`
-	TargetProvider     string   `yaml:"targetProvider"`
-	TargetParent       string   `yaml:"targetParent"`
-	CreateGroups       bool     `yaml:"createGroups"`
-	AdoptExistingGroup bool     `yaml:"adoptExistingGroup"`
-	AccessLevel        string   `yaml:"accessLevel"`
-	Prune              string   `yaml:"prune"`
-	ProtectedUsers     []string `yaml:"protectedUsers"`
-	MaxRemovals        int      `yaml:"maxRemovals"`
-	IdentityMatch      []string `yaml:"identityMatch"`
-	EnforceAccessLevel bool     `yaml:"enforceAccessLevel"`
+	Name               string     `yaml:"name"`
+	SourceGroupPrefix  string     `yaml:"sourceGroupPrefix"`
+	SourceGroupPaths   []string   `yaml:"sourceGroupPaths"`
+	TargetProvider     string     `yaml:"targetProvider"`
+	TargetParent       string     `yaml:"targetParent"`
+	CreateGroups       bool       `yaml:"createGroups"`
+	AdoptExistingGroup bool       `yaml:"adoptExistingGroup"`
+	AccessLevel        string     `yaml:"accessLevel"`
+	Prune              string     `yaml:"prune"`
+	ProtectedUsers     []string   `yaml:"protectedUsers"`
+	MaxRemovals        int        `yaml:"maxRemovals"`
+	IdentityMatch      []string   `yaml:"identityMatch"`
+	EnforceAccessLevel bool       `yaml:"enforceAccessLevel"`
+	Vault              *VaultRule `yaml:"vault"`
+}
+
+type VaultRule struct {
+	PathPrefix    string `yaml:"pathPrefix"`
+	AccessProfile string `yaml:"accessProfile"`
+	PolicyMode    string `yaml:"policyMode"`
+	Discoverable  bool   `yaml:"discoverable"`
 }
 
 type State struct {
@@ -138,11 +157,33 @@ func (c Config) Validate() error {
 	}
 	targets := make(map[string]Target, len(c.Targets))
 	for i, t := range c.Targets {
-		if t.Name == "" || t.Type == "" || t.BaseURL == "" || t.TokenEnv == "" {
-			errs = append(errs, fmt.Errorf("targets[%d] requires name, type, baseURL, and tokenEnv", i))
+		if t.Name == "" || t.Type == "" || t.BaseURL == "" {
+			errs = append(errs, fmt.Errorf("targets[%d] requires name, type, and baseURL", i))
 		}
-		if t.Type != "gitlab" {
+		if t.Type != "gitlab" && t.Type != "vault" {
 			errs = append(errs, fmt.Errorf("targets[%d].type %q is not compiled in", i, t.Type))
+		}
+		switch t.Type {
+		case "gitlab":
+			if t.TokenEnv == "" {
+				errs = append(errs, fmt.Errorf("targets[%d] GitLab target requires tokenEnv", i))
+			}
+			if t.OIDCMount != "" || t.KVMount != "" || t.KubernetesAuth != (VaultKubernetesAuth{}) {
+				errs = append(errs, fmt.Errorf("targets[%d] contains Vault-only fields", i))
+			}
+		case "vault":
+			if t.TokenEnv != "" || t.ResolverTokenEnv != "" {
+				errs = append(errs, fmt.Errorf("targets[%d] Vault target must not use tokenEnv or resolverTokenEnv", i))
+			}
+			if !safeVaultPath(t.OIDCMount) || !safeVaultPath(t.KVMount) || !safeVaultPath(t.KubernetesAuth.Mount) {
+				errs = append(errs, fmt.Errorf("targets[%d] Vault mounts must be a safe mount path", i))
+			}
+			if t.KubernetesAuth.Role == "" || !strings.HasPrefix(t.KubernetesAuth.TokenFile, "/") {
+				errs = append(errs, fmt.Errorf("targets[%d] Vault kubernetesAuth requires role and absolute tokenFile", i))
+			}
+			if t.OIDCProvider != "" {
+				errs = append(errs, fmt.Errorf("targets[%d] contains GitLab-only fields", i))
+			}
 		}
 		if err := validateBaseURL(t.BaseURL, t.AllowInsecureHTTP); err != nil {
 			errs = append(errs, fmt.Errorf("targets[%d].baseURL: %w", i, err))
@@ -164,12 +205,22 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("duplicate rule name %q", r.Name))
 		}
 		ruleNames[r.Name] = struct{}{}
+		pathSet := make(map[string]struct{}, len(r.SourceGroupPaths))
+		for _, path := range r.SourceGroupPaths {
+			prefix := "/" + strings.Trim(r.SourceGroupPrefix, "/")
+			if path == "" || path != "/"+strings.Trim(path, "/") ||
+				(prefix != "/" && !strings.HasPrefix(path, prefix+"/")) ||
+				(prefix == "/" && path == "/") {
+				errs = append(errs, fmt.Errorf("rules[%d].sourceGroupPaths entry %q must be a canonical absolute descendant of sourceGroupPrefix", i, path))
+			}
+			if _, duplicate := pathSet[path]; duplicate {
+				errs = append(errs, fmt.Errorf("rules[%d].sourceGroupPaths contains duplicate %q", i, path))
+			}
+			pathSet[path] = struct{}{}
+		}
 		target, ok := targets[r.TargetProvider]
 		if !ok {
 			errs = append(errs, fmt.Errorf("rules[%d] references unknown target %q", i, r.TargetProvider))
-		}
-		if _, ok := accessLevels[r.AccessLevel]; !ok {
-			errs = append(errs, fmt.Errorf("rules[%d].accessLevel is invalid", i))
 		}
 		if r.Prune != "none" && r.Prune != "managed-only" && r.Prune != "authoritative" {
 			errs = append(errs, fmt.Errorf("rules[%d].prune must be none, managed-only, or authoritative", i))
@@ -177,15 +228,55 @@ func (c Config) Validate() error {
 		if r.MaxRemovals < 0 {
 			errs = append(errs, fmt.Errorf("rules[%d].maxRemovals cannot be negative", i))
 		}
-		if len(r.IdentityMatch) == 0 {
-			errs = append(errs, fmt.Errorf("rules[%d].identityMatch must not be empty", i))
-		}
-		for _, match := range r.IdentityMatch {
-			if match != "oidc" && match != "username" && match != "email" {
-				errs = append(errs, fmt.Errorf("rules[%d].identityMatch contains unsupported value %q", i, match))
+		if ok {
+			declaredTargets := make(map[string]string, len(r.SourceGroupPaths))
+			for _, sourcePath := range r.SourceGroupPaths {
+				targetPath, mapErr := declaredTargetPath(target.Type, r, sourcePath)
+				if mapErr != nil {
+					errs = append(errs, fmt.Errorf("rules[%d].sourceGroupPaths entry %q: %w", i, sourcePath, mapErr))
+					continue
+				}
+				if previous, collision := declaredTargets[targetPath]; collision {
+					errs = append(errs, fmt.Errorf("rules[%d].sourceGroupPaths entries %q and %q collide at target path %q", i, previous, sourcePath, targetPath))
+				}
+				declaredTargets[targetPath] = sourcePath
 			}
-			if match == "oidc" && ok && (target.OIDCProvider == "" || target.ResolverTokenEnv == "") {
-				errs = append(errs, fmt.Errorf("rules[%d] uses oidc matching but target %q lacks oidcProvider or resolverTokenEnv", i, target.Name))
+			switch target.Type {
+			case "gitlab":
+				if r.Vault != nil {
+					errs = append(errs, fmt.Errorf("rules[%d] GitLab rule must not contain vault", i))
+				}
+				if _, valid := accessLevels[r.AccessLevel]; !valid {
+					errs = append(errs, fmt.Errorf("rules[%d].accessLevel is invalid", i))
+				}
+				if len(r.IdentityMatch) == 0 {
+					errs = append(errs, fmt.Errorf("rules[%d].identityMatch must not be empty", i))
+				}
+				for _, match := range r.IdentityMatch {
+					if match != "oidc" && match != "username" && match != "email" {
+						errs = append(errs, fmt.Errorf("rules[%d].identityMatch contains unsupported value %q", i, match))
+					}
+					if match == "oidc" && (target.OIDCProvider == "" || target.ResolverTokenEnv == "") {
+						errs = append(errs, fmt.Errorf("rules[%d] uses oidc matching but target %q lacks oidcProvider or resolverTokenEnv", i, target.Name))
+					}
+				}
+			case "vault":
+				if r.Vault == nil || !safeVaultPath(r.Vault.PathPrefix) {
+					errs = append(errs, fmt.Errorf("rules[%d] Vault rule requires vault.pathPrefix as a safe mount path", i))
+				} else if r.Vault.AccessProfile != "viewer" && r.Vault.AccessProfile != "editor" {
+					errs = append(errs, fmt.Errorf("rules[%d] Vault accessProfile must be viewer or editor", i))
+				}
+				if r.Vault != nil && r.Vault.PolicyMode != "" && r.Vault.PolicyMode != "verify-only" {
+					errs = append(errs, fmt.Errorf("rules[%d] Vault policyMode must be verify-only", i))
+				}
+				if r.Prune != "none" {
+					errs = append(errs, fmt.Errorf("rules[%d] read-only Vault target requires prune none", i))
+				}
+				if r.TargetParent != "" || r.AccessLevel != "" || len(r.IdentityMatch) != 0 ||
+					len(r.ProtectedUsers) != 0 || r.MaxRemovals != 0 || r.EnforceAccessLevel ||
+					r.CreateGroups || r.AdoptExistingGroup {
+					errs = append(errs, fmt.Errorf("rules[%d] Vault rule contains GitLab-only fields", i))
+				}
 			}
 		}
 	}
@@ -196,6 +287,60 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("state.path is required"))
 	}
 	return errors.Join(errs...)
+}
+
+var unsafeDeclaredPathChars = regexp.MustCompile(`[^a-z0-9_-]+`)
+
+func declaredTargetPath(targetType string, rule Rule, sourcePath string) (string, error) {
+	prefix := "/" + strings.Trim(rule.SourceGroupPrefix, "/")
+	relative := strings.TrimPrefix(sourcePath, "/")
+	if prefix != "/" {
+		relative = strings.TrimPrefix(sourcePath, prefix+"/")
+	}
+	var mapped []string
+	for _, segment := range strings.Split(relative, "/") {
+		switch targetType {
+		case "vault":
+			if len(segment) == 0 || len(segment) > 63 {
+				return "", fmt.Errorf("Vault path segment %q is unsafe", segment)
+			}
+			for _, ch := range segment {
+				if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+					(ch >= '0' && ch <= '9') || ch == '-' || ch == '_') {
+					return "", fmt.Errorf("Vault path segment %q is unsafe", segment)
+				}
+			}
+			mapped = append(mapped, strings.ToLower(segment))
+		case "gitlab":
+			slug := strings.Trim(unsafeDeclaredPathChars.ReplaceAllString(strings.ToLower(segment), "-"), "-_")
+			if slug == "" {
+				return "", fmt.Errorf("group path segment %q has no target-safe characters", segment)
+			}
+			mapped = append(mapped, slug)
+		}
+	}
+	parent := rule.TargetParent
+	if targetType == "vault" && rule.Vault != nil {
+		parent = rule.Vault.PathPrefix
+	}
+	return strings.Trim(strings.Trim(parent, "/")+"/"+strings.Join(mapped, "/"), "/"), nil
+}
+
+func safeVaultPath(value string) bool {
+	if value == "" || strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") {
+		return false
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+		for _, r := range segment {
+			if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func Secret(envName string) (string, error) {

@@ -11,6 +11,9 @@ flowchart LR
   WH -->|"debounced wake-up"| R
   TIMER["Periodic repair scan"] --> R
   R -->|"desired direct membership"| GL["GitLab API"]
+  R -->|"verify policies, groups, and aliases"| VAULT["Vault Identity API"]
+  GIT["Git org catalog"] -->|"exact path intent and ACL policies"| R
+  GIT --> VAULT
   R <--> LEDGER["Persistent ownership ledger"]
 ```
 
@@ -28,18 +31,24 @@ flowchart LR
 - A target-path collision fails before any provider mutation.
 - A missing membership must be seen in two complete snapshots before deletion.
 - Deleted or moved source groups are reconciled through persisted mapping tombstones.
+- Exact `sourceGroupPaths` distinguish a temporary Keycloak rebuild from an intentional
+  Git removal. Canonical full paths, not recreated Keycloak UUIDs, own declared targets.
+- Vault reconciliation never provisions users, reads secret data, writes ACL policies,
+  or deletes identity objects.
 
 ## Provider boundary
 
-The Go `provider.Provider` interface exposes a name, health check, and `SyncGroup`.
-Provider-neutral requests contain source group IDs, members, target path, desired role,
-identity methods, and safety policy. Provider implementations own native API details.
-They are compiled into the binary through an explicit registry—there is no dynamic code
-loading or Go plugin ABI.
+The common `provider.Provider` interface exposes only a name and health check.
+`GroupSyncProvider` handles GitLab-style direct membership, while `AccessProvider`
+handles Vault-style claim-backed access without target user provisioning. Providers are
+compiled into the binary through an explicit registry—there is no dynamic code loading
+or Go plugin ABI.
 
-The next provider should first be implemented against the narrow interface. If its
-native model is not group membership (Vault group aliases are the obvious example), add
-a new capability interface instead of making it pretend to be GitLab.
+Vault ACL policies and the KV v2 mount are GitOps-owned. The provider derives the exact
+expected name and HCL, then verifies the external identity group and exact Keycloak
+full-path OIDC group alias that VCO/Argo created. VCO/Argo owns creation, updates, and
+deletion from the same Git organization catalog; GroupBridge only verifies exact live
+state.
 
 ## State and availability
 
@@ -54,7 +63,10 @@ before raising the chart replica count.
 
 ## Identity
 
-Stable numeric/opaque IDs are canonical inside each system. Group paths and usernames
-are mutable locators. The preferred cross-system join is Keycloak user ID to GitLab OIDC
-external UID. Username and email modes exist only for compatibility with aligned legacy
-accounts.
+For GitOps-declared rules, canonical full paths are durable organization identities and
+Keycloak UUIDs are runtime correlation only. This permits a complete Keycloak rebuild
+without embedding generated UUIDs in Git. The preferred GitLab user join remains
+Keycloak user ID to GitLab OIDC external UID. Vault instead maps each direct, full
+Keycloak group path from the dedicated `vault_groups` claim to an external-group alias
+during OIDC login. Direct full paths avoid the parent-role inheritance that would
+otherwise over-grant nested organizations.

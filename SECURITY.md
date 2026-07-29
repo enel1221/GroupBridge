@@ -23,7 +23,13 @@ embargo or disclosure date is promised until scope and a fix are understood.
 - GitLab mutation is bounded by target paths, allowed roles, protected principals, and
   a removal circuit breaker.
 - GroupBridge never deletes GitLab groups or assigns Owner.
+- GroupBridge never reads or mutates Vault secret data, writes Vault ACL policies, or
+  deletes Vault identity objects. Vault policies and mounts are GitOps-owned.
+- Vault object lifecycle is owned by GitOps/Vault Config Operator. GroupBridge only
+  reads exact compiled policies and external groups and performs no identity mutation.
 - The pod needs no Kubernetes API token or RBAC.
+- Optional Vault auth uses an explicit `audience: vault` projected service-account token
+  while automatic Kubernetes API token mounting stays disabled.
 - TLS verification is on and redirects are refused by both HTTP clients.
 - Secrets must be supplied through referenced environment variables/Kubernetes Secrets
   and are not emitted into logs or metrics.
