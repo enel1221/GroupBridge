@@ -84,7 +84,6 @@ rules:
 func TestDecodeSupportsAbsoluteWebhookSecretFileAndRejectsAmbiguousSources(t *testing.T) {
 	base := `
 webhook:
-  secretEnv: ""
   secretFile: /var/run/secrets/groupbridge-event/webhook-secret
 source: {type: keycloak, baseURL: https://kc, realm: r, clientID: c, pollInterval: 1s}
 targets: [{name: gl, type: gitlab, baseURL: https://gl, tokenEnv: TOKEN}]
