@@ -513,12 +513,16 @@ func TestDirectUserDeleteConfirmsEveryPriorGroupWithinSeconds(t *testing.T) {
 		t.Fatalf("first authoritative reads = %d, want 3", got)
 	}
 
-	select {
-	case <-r.events.Wake():
-	case <-time.After(3 * time.Second):
-		t.Fatal("second membership confirmation was not scheduled")
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	for src.readCalls.Load() < 6 {
+		select {
+		case <-r.events.Wake():
+			r.processEventBatch(context.Background(), r.events.Drain())
+		case <-deadline.C:
+			t.Fatal("second membership confirmation did not finish within three seconds")
+		}
 	}
-	r.processEventBatch(context.Background(), r.events.Drain())
 	if got := src.readCalls.Load(); got != 6 {
 		t.Fatalf("authoritative reads after confirmation = %d, want 6", got)
 	}
