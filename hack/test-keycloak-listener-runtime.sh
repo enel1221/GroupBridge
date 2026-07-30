@@ -124,6 +124,28 @@ if ! grep -Eq 'kc\.features = +scripts \(Persisted(ConfigSource)?\)' <<<"${persi
   echo "Optimized Keycloak runtime did not persist the scripts feature" >&2
   exit 1
 fi
+keycloak_build_help=$(docker run --rm "${runtime_image}" build --help 2>&1)
+operator_build_env=()
+operator_persisted_options=()
+if grep -q -- '--tracing-enabled' <<<"${keycloak_build_help}"; then
+  operator_build_env+=(-e KC_TRACING_ENABLED=false)
+  operator_persisted_options+=('kc\.tracing-enabled = +false')
+fi
+if grep -q -- '--transaction-xa-enabled' <<<"${keycloak_build_help}"; then
+  operator_build_env+=(-e KC_TRANSACTION_XA_ENABLED=true)
+  operator_persisted_options+=('kc\.transaction-xa-enabled = +true')
+fi
+if grep -q -- '--event-metrics-user-enabled' <<<"${keycloak_build_help}"; then
+  operator_build_env+=(-e KC_EVENT_METRICS_USER_ENABLED=true)
+  operator_persisted_options+=('kc\.event-metrics-user-enabled = +true')
+fi
+for persisted_option in "${operator_persisted_options[@]}"; do
+  if ! grep -Eq "${persisted_option} \(Persisted(ConfigSource)?\)" <<<"${persisted_config}"; then
+    echo "${persisted_config}" >&2
+    echo "Optimized Keycloak runtime did not persist operator build-time settings" >&2
+    exit 1
+  fi
+done
 
 docker network create "${network_name}" >/dev/null
 docker run --detach --name "${database_name}" \
@@ -149,6 +171,7 @@ docker run --detach --name "${container_name}" \
   -e KC_FEATURES=scripts \
   -e KC_HTTP_ENABLED=true \
   -e KC_HOSTNAME_STRICT=false \
+  "${operator_build_env[@]}" \
   -e KC_SPI_EVENTS_LISTENER__GROUPBRIDGE__WEBHOOK_URL="http://host.docker.internal:${sink_port}/v1/events/keycloak" \
   -e KC_SPI_EVENTS_LISTENER__GROUPBRIDGE__WEBHOOK_SECRET="${webhook_secret}" \
   -e KC_SPI_EVENTS_LISTENER__GROUPBRIDGE__ALLOW_INSECURE_HTTP=true \

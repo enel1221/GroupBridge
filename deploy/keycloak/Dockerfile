@@ -8,11 +8,25 @@ FROM ${KEYCLOAK_IMAGE}
 COPY --from=provider --chown=1000:0 \
     /provider/groupbridge-keycloak-event-listener.jar \
     /opt/keycloak/providers/groupbridge-keycloak-event-listener.jar
-RUN /opt/keycloak/bin/kc.sh build \
-    --db=postgres \
-    --features=scripts \
-    --health-enabled=true \
-    --metrics-enabled=true
+RUN set -- \
+        --db=postgres \
+        --features=scripts \
+        --health-enabled=true \
+        --metrics-enabled=true; \
+    build_help="$("/opt/keycloak/bin/kc.sh" build --help 2>&1)"; \
+    case "${build_help}" in \
+        *--tracing-enabled*) \
+            set -- "$@" --tracing-enabled=false ;; \
+    esac; \
+    case "${build_help}" in \
+        *--transaction-xa-enabled*) \
+            set -- "$@" --transaction-xa-enabled=true ;; \
+    esac; \
+    /opt/keycloak/bin/kc.sh build "$@"; \
+    post_build_help="$("/opt/keycloak/bin/kc.sh" build --help 2>&1)"; \
+    if printf '%s\n' "${post_build_help}" | grep -q '^--event-metrics-user-enabled '; then \
+        /opt/keycloak/bin/kc.sh build "$@" --event-metrics-user-enabled=true; \
+    fi
 
 ENTRYPOINT ["/opt/keycloak/bin/kc.sh"]
 CMD ["start", "--optimized"]
