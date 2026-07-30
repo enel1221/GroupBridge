@@ -130,6 +130,11 @@ func Decode(r io.Reader) (Config, error) {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
 	// Preserve the legacy implicit environment source while allowing a
+	// file-only source to opt out without also spelling secretEnv: "".
+	if c.Webhook.SecretEnv == "" && c.Webhook.SecretFile == "" {
+		c.Webhook.SecretEnv = "GROUPBRIDGE_WEBHOOK_SECRET"
+	}
+	// Preserve the legacy implicit environment source while allowing a
 	// file-only source to opt out without also spelling clientSecretEnv: "".
 	if c.Source.ClientSecretEnv == "" && c.Source.ClientSecretFile == "" {
 		c.Source.ClientSecretEnv = "GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET"
@@ -143,7 +148,7 @@ func Decode(r io.Reader) (Config, error) {
 func defaults() Config {
 	return Config{
 		Server:  Server{Address: ":8080", ShutdownTimeout: Duration{10 * time.Second}},
-		Webhook: Webhook{SecretEnv: "GROUPBRIDGE_WEBHOOK_SECRET", MaxSkew: Duration{5 * time.Minute}},
+		Webhook: Webhook{MaxSkew: Duration{5 * time.Minute}},
 		Source:  Source{Type: "keycloak", PollInterval: Duration{5 * time.Minute}},
 		State:   State{Path: "/var/lib/groupbridge/state.json"},
 	}
