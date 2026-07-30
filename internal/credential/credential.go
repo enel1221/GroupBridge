@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -20,6 +21,45 @@ type Loader struct {
 	environment string
 	filePath    string
 	staticValue *string
+}
+
+// StableLoader observes file-backed rotation while retaining the last valid
+// value across a transient projected-Secret symlink swap. It fails closed
+// until one value meeting the configured minimum length has been read.
+type StableLoader struct {
+	source   Loader
+	minBytes int
+
+	mu   sync.Mutex
+	last string
+}
+
+func NewStable(source Loader, minBytes int) (*StableLoader, error) {
+	if minBytes < 1 {
+		return nil, errors.New("stable credential minimum length must be positive")
+	}
+	loader := &StableLoader{source: source, minBytes: minBytes}
+	if _, err := loader.Load(); err != nil {
+		return nil, err
+	}
+	return loader, nil
+}
+
+func (l *StableLoader) Load() (string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	value, err := l.source.Load()
+	if err == nil && len([]byte(value)) < l.minBytes {
+		err = fmt.Errorf("credential must contain at least %d bytes", l.minBytes)
+	}
+	if err == nil {
+		l.last = value
+		return value, nil
+	}
+	if l.last != "" {
+		return l.last, nil
+	}
+	return "", err
 }
 
 // New creates an environment- or file-backed Loader. Exactly one source is

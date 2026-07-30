@@ -81,6 +81,39 @@ func (c *Client) ListGroups(ctx context.Context) ([]model.Group, error) {
 	return groups, nil
 }
 
+func (c *Client) ReadGroup(ctx context.Context, groupID string) (model.Group, bool, error) {
+	if groupID == "" {
+		return model.Group{}, false, errors.New("Keycloak group id is empty")
+	}
+	path := fmt.Sprintf(
+		"/admin/realms/%s/groups/%s",
+		url.PathEscape(c.realm),
+		url.PathEscape(groupID),
+	)
+	var representation groupRepresentation
+	found, err := c.getOptional(ctx, path, url.Values{"briefRepresentation": {"true"}}, &representation)
+	if err != nil {
+		return model.Group{}, false, fmt.Errorf("read group: %w", err)
+	}
+	if !found {
+		return model.Group{}, false, nil
+	}
+	if representation.ID == "" || representation.Name == "" || representation.Path == "" {
+		return model.Group{}, false, errors.New("Keycloak returned an incomplete group")
+	}
+	if representation.ID != groupID {
+		return model.Group{}, false, errors.New("Keycloak returned a different group id")
+	}
+	members, err := c.listMembers(ctx, representation.ID)
+	if err != nil {
+		return model.Group{}, false, fmt.Errorf("list members for group %q: %w", representation.Path, err)
+	}
+	return model.Group{
+		ID: representation.ID, Name: representation.Name,
+		Path: representation.Path, Members: members,
+	}, true, nil
+}
+
 func (c *Client) collectGroup(ctx context.Context, group groupRepresentation, parentPath string, seen map[string]struct{}, groups *[]model.Group) error {
 	if group.ID == "" || group.Name == "" {
 		return errors.New("keycloak returned a group without an id or name")
@@ -172,10 +205,21 @@ func (c *Client) listMembers(ctx context.Context, groupID string) ([]model.User,
 }
 
 func (c *Client) get(ctx context.Context, path string, query url.Values, dst any) error {
+	found, err := c.getOptional(ctx, path, query, dst)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("Keycloak API returned 404 Not Found")
+	}
+	return nil
+}
+
+func (c *Client) getOptional(ctx context.Context, path string, query url.Values, dst any) (bool, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		token, err := c.token(ctx)
 		if err != nil {
-			return err
+			return false, err
 		}
 		u := c.baseURL + path
 		if len(query) > 0 {
@@ -183,33 +227,37 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, dst any
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
-			return fmt.Errorf("build Keycloak request: %w", err)
+			return false, fmt.Errorf("build Keycloak request: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("User-Agent", "GroupBridge/1")
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return fmt.Errorf("call Keycloak: %w", err)
+			return false, fmt.Errorf("call Keycloak: %w", err)
 		}
 		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
 			resp.Body.Close()
 			c.invalidateToken()
 			continue
 		}
+		if resp.StatusCode == http.StatusNotFound {
+			resp.Body.Close()
+			return false, nil
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 			resp.Body.Close()
-			return fmt.Errorf("Keycloak API returned %s", resp.Status)
+			return false, fmt.Errorf("Keycloak API returned %s", resp.Status)
 		}
 		err = json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(dst)
 		resp.Body.Close()
 		if err != nil {
-			return fmt.Errorf("decode Keycloak response: %w", err)
+			return false, fmt.Errorf("decode Keycloak response: %w", err)
 		}
-		return nil
+		return true, nil
 	}
-	return errors.New("Keycloak authentication failed")
+	return false, errors.New("Keycloak authentication failed")
 }
 
 func (c *Client) token(ctx context.Context) (string, error) {

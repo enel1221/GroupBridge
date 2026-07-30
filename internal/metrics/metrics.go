@@ -12,6 +12,9 @@ type Metrics struct {
 	ReconcileErrors        atomic.Uint64
 	WebhookAccepted        atomic.Uint64
 	WebhookRejected        atomic.Uint64
+	EventHintsCoalesced    atomic.Uint64
+	EventTargetedRuns      atomic.Uint64
+	EventFullRepairs       atomic.Uint64
 	GroupsCreated          atomic.Uint64
 	MembershipsAdded       atomic.Uint64
 	MembershipsChanged     atomic.Uint64
@@ -29,6 +32,9 @@ func (m *Metrics) WritePrometheus(w io.Writer) {
 	write("groupbridge_reconcile_errors_total", "Reconciliation scans that returned an error.", m.ReconcileErrors.Load())
 	write("groupbridge_webhook_accepted_total", "Authenticated Keycloak hints accepted.", m.WebhookAccepted.Load())
 	write("groupbridge_webhook_rejected_total", "Keycloak hints rejected.", m.WebhookRejected.Load())
+	write("groupbridge_event_hints_coalesced_total", "Authenticated hints merged into bounded event work.", m.EventHintsCoalesced.Load())
+	write("groupbridge_event_targeted_reconciles_total", "Authoritative single-group event reconciliations attempted.", m.EventTargetedRuns.Load())
+	write("groupbridge_event_full_repairs_total", "Rate-limited complete repairs requested by unroutable events.", m.EventFullRepairs.Load())
 	write("groupbridge_groups_created_total", "Target groups created.", m.GroupsCreated.Load())
 	write("groupbridge_memberships_added_total", "Target memberships added.", m.MembershipsAdded.Load())
 	write("groupbridge_memberships_changed_total", "Target membership access levels changed.", m.MembershipsChanged.Load())

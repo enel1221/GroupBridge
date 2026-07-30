@@ -55,8 +55,10 @@ class WebhookSenderTest {
             exchange.close();
         });
 
-        try (WebhookSender sender = sender()) {
-            assertTrue(sender.deliver(WebhookHint.from(event(), () -> "delivery-fixed")));
+        try (WebhookSender sender = sender();
+                RoutingKey routingKey = routingKey()) {
+            assertTrue(sender.deliver(
+                    WebhookHint.from(event(), routingKey, () -> "delivery-fixed")));
         }
 
         CapturedRequest request = captured.get();
@@ -80,8 +82,10 @@ class WebhookSenderTest {
             exchange.close();
         });
 
-        try (WebhookSender sender = sender()) {
-            assertFalse(sender.deliver(WebhookHint.from(event(), () -> "delivery-fixed")));
+        try (WebhookSender sender = sender();
+                RoutingKey routingKey = routingKey()) {
+            assertFalse(sender.deliver(
+                    WebhookHint.from(event(), routingKey, () -> "delivery-fixed")));
         }
     }
 
@@ -105,10 +109,11 @@ class WebhookSenderTest {
         });
         AtomicReference<KeycloakTransaction> enlisted = new AtomicReference<>();
 
-        try (AsyncWebhookDispatcher dispatcher = new AsyncWebhookDispatcher(
-                sender(), 1, 8, java.time.Duration.ofSeconds(1))) {
+        try (RoutingKey routingKey = routingKey();
+                AsyncWebhookDispatcher dispatcher = new AsyncWebhookDispatcher(
+                        sender(), 1, 8, java.time.Duration.ofSeconds(1))) {
             GroupBridgeEventListenerProvider provider = new GroupBridgeEventListenerProvider(
-                    sessionCapturing(enlisted), dispatcher);
+                    sessionCapturing(enlisted), dispatcher, java.util.Set.of(), routingKey);
             provider.onEvent(event(), true);
 
             assertNull(body.get());
@@ -134,10 +139,11 @@ class WebhookSenderTest {
         };
         AtomicReference<KeycloakTransaction> enlisted = new AtomicReference<>();
 
-        try (AsyncWebhookDispatcher dispatcher = new AsyncWebhookDispatcher(
-                delivery, 1, 8, java.time.Duration.ofSeconds(1))) {
+        try (RoutingKey routingKey = routingKey();
+                AsyncWebhookDispatcher dispatcher = new AsyncWebhookDispatcher(
+                        delivery, 1, 8, java.time.Duration.ofSeconds(1))) {
             GroupBridgeEventListenerProvider provider = new GroupBridgeEventListenerProvider(
-                    sessionCapturing(enlisted), dispatcher);
+                    sessionCapturing(enlisted), dispatcher, java.util.Set.of("gitlab"), routingKey);
             provider.onEvent(loginEvent());
 
             assertNull(captured.get());
@@ -145,8 +151,10 @@ class WebhookSenderTest {
             assertTrue(delivered.await(1, TimeUnit.SECONDS));
             assertEquals("LOGIN", captured.get().payload().operationType());
             assertEquals("USER", captured.get().payload().resourceType());
-            assertNull(captured.get().payload().resourceId());
-            assertNull(captured.get().payload().resourcePath());
+            assertNull(captured.get().payload().groupKey());
+            assertEquals(
+                    "1ac5504a72c4b71c8377044145d8f48ec91bc9141188eef45794140332277008",
+                    captured.get().payload().userKey());
         }
     }
 
@@ -159,6 +167,10 @@ class WebhookSenderTest {
                 configuration,
                 HttpClient.newBuilder().connectTimeout(configuration.connectTimeout()).build(),
                 Clock.fixed(Instant.ofEpochSecond(1_700_000_000L), ZoneOffset.UTC));
+    }
+
+    private static RoutingKey routingKey() {
+        return new RoutingKey(SECRET.getBytes(StandardCharsets.UTF_8));
     }
 
     private static AdminEvent event() {
@@ -179,6 +191,7 @@ class WebhookSenderTest {
         event.setRealmId("realm-1");
         event.setRealmName("engineering");
         event.setType(EventType.LOGIN);
+        event.setClientId("gitlab");
         event.setUserId("private-user-id");
         event.setIpAddress("192.0.2.1");
         return event;

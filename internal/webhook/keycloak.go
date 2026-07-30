@@ -19,31 +19,44 @@ import (
 const maxBodyBytes = 64 << 10
 
 type Handler struct {
-	secret  []byte
+	secret  secretLoader
 	maxSkew time.Duration
 	realm   string
 	now     func() time.Time
-	trigger func()
+	trigger func(Hint)
 	metrics *metrics.Metrics
 
 	mu   sync.Mutex
 	seen map[string]time.Time
 }
 
+type secretLoader interface {
+	Load() (string, error)
+}
+
+// Hint contains only the event classification needed to schedule a fresh
+// source read. It is never used as desired-state or identity data.
+type Hint struct {
+	ResourceType  string
+	OperationType string
+	GroupKey      string
+	UserKey       string
+	GlobalRepair  bool
+}
+
 type envelope struct {
 	SpecVersion   string `json:"specVersion"`
 	EventID       string `json:"eventId"`
 	OccurredAt    string `json:"occurredAt"`
-	RealmID       string `json:"realmId"`
 	RealmName     string `json:"realmName"`
 	ResourceType  string `json:"resourceType"`
 	OperationType string `json:"operationType"`
-	ResourcePath  string `json:"resourcePath"`
-	ResourceID    string `json:"resourceId"`
+	GroupKey      string `json:"groupKey"`
+	UserKey       string `json:"userKey"`
 }
 
-func New(secret, realm string, maxSkew time.Duration, trigger func(), metrics *metrics.Metrics) *Handler {
-	return &Handler{secret: []byte(secret), realm: realm, maxSkew: maxSkew, now: time.Now, trigger: trigger, metrics: metrics, seen: make(map[string]time.Time)}
+func New(secret secretLoader, realm string, maxSkew time.Duration, trigger func(Hint), metrics *metrics.Metrics) *Handler {
+	return &Handler{secret: secret, realm: realm, maxSkew: maxSkew, now: time.Now, trigger: trigger, metrics: metrics, seen: make(map[string]time.Time)}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -62,12 +75,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	delivery := r.Header.Get("X-GroupBridge-Delivery")
 	signature := r.Header.Get("X-GroupBridge-Signature")
 	seconds, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil || delivery == "" || len(delivery) > 128 || !h.fresh(time.Unix(seconds, 0)) || !h.validSignature(timestamp, delivery, body, signature) {
+	if err != nil || delivery == "" || len(delivery) > 128 || !h.fresh(time.Unix(seconds, 0)) {
+		h.reject(w)
+		return
+	}
+	secret, err := h.secret.Load()
+	if err != nil || len([]byte(secret)) < 32 ||
+		!validSignature([]byte(secret), timestamp, delivery, body, signature) {
 		h.reject(w)
 		return
 	}
 	var event envelope
-	if err := json.Unmarshal(body, &event); err != nil || event.SpecVersion != "1.0" || event.EventID == "" || event.EventID != delivery || event.RealmID == "" || event.RealmName != h.realm || event.ResourceType == "" || event.OperationType == "" {
+	if err := json.Unmarshal(body, &event); err != nil || event.SpecVersion != "1.0" ||
+		event.EventID == "" || event.EventID != delivery || event.RealmName != h.realm {
+		h.reject(w)
+		return
+	}
+	hint, valid := classify(event)
+	if !valid {
 		h.reject(w)
 		return
 	}
@@ -76,11 +101,86 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.metrics.WebhookAccepted.Add(1)
-	h.trigger()
+	h.trigger(hint)
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (h *Handler) validSignature(timestamp, delivery string, body []byte, signature string) bool {
+func classify(event envelope) (Hint, bool) {
+	hint := Hint{ResourceType: event.ResourceType, OperationType: event.OperationType}
+	switch event.ResourceType {
+	case "GROUP":
+		if event.OperationType != "CREATE" && event.OperationType != "UPDATE" && event.OperationType != "DELETE" {
+			return Hint{}, false
+		}
+		if event.UserKey != "" {
+			return Hint{}, false
+		}
+		hint.GroupKey = event.GroupKey
+	case "GROUP_MEMBERSHIP":
+		if event.OperationType != "CREATE" && event.OperationType != "DELETE" {
+			return Hint{}, false
+		}
+		if event.UserKey != "" {
+			return Hint{}, false
+		}
+		hint.GroupKey = event.GroupKey
+	case "USER":
+		switch event.OperationType {
+		case "LOGIN":
+			if event.GroupKey != "" {
+				return Hint{}, false
+			}
+			hint.UserKey = event.UserKey
+		case "CREATE":
+			if event.UserKey != "" {
+				return Hint{}, false
+			}
+			hint.GroupKey = event.GroupKey
+		case "UPDATE":
+			if event.GroupKey != "" {
+				return Hint{}, false
+			}
+			hint.UserKey = event.UserKey
+		case "DELETE":
+			if (event.GroupKey == "") == (event.UserKey == "") {
+				if event.GroupKey != "" {
+					return Hint{}, false
+				}
+				hint.GlobalRepair = true
+				return hint, true
+			}
+			hint.GroupKey = event.GroupKey
+			hint.UserKey = event.UserKey
+		default:
+			return Hint{}, false
+		}
+	default:
+		return Hint{}, false
+	}
+	if hint.GroupKey == "" && hint.UserKey == "" {
+		hint.GlobalRepair = true
+		return hint, true
+	}
+	if (hint.GroupKey != "" && !validRoutingKey(hint.GroupKey)) ||
+		(hint.UserKey != "" && !validRoutingKey(hint.UserKey)) {
+		return Hint{}, false
+	}
+	return hint, true
+}
+
+func validRoutingKey(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validSignature(secret []byte, timestamp, delivery string, body []byte, signature string) bool {
 	if !strings.HasPrefix(signature, "sha256=") {
 		return false
 	}
@@ -88,7 +188,7 @@ func (h *Handler) validSignature(timestamp, delivery string, body []byte, signat
 	if err != nil || len(got) != sha256.Size {
 		return false
 	}
-	mac := hmac.New(sha256.New, h.secret)
+	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(timestamp))
 	mac.Write([]byte{'\n'})
 	mac.Write([]byte(delivery))

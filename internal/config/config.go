@@ -26,13 +26,20 @@ type Config struct {
 }
 
 type Server struct {
-	Address         string   `yaml:"address"`
-	ShutdownTimeout Duration `yaml:"shutdownTimeout"`
+	Address         string    `yaml:"address"`
+	ShutdownTimeout Duration  `yaml:"shutdownTimeout"`
+	TLS             ServerTLS `yaml:"tls"`
+}
+
+type ServerTLS struct {
+	CertFile string `yaml:"certFile"`
+	KeyFile  string `yaml:"keyFile"`
 }
 
 type Webhook struct {
-	SecretEnv string   `yaml:"secretEnv"`
-	MaxSkew   Duration `yaml:"maxSkew"`
+	SecretEnv  string   `yaml:"secretEnv"`
+	SecretFile string   `yaml:"secretFile"`
+	MaxSkew    Duration `yaml:"maxSkew"`
 }
 
 type Source struct {
@@ -137,7 +144,7 @@ func defaults() Config {
 	return Config{
 		Server:  Server{Address: ":8080", ShutdownTimeout: Duration{10 * time.Second}},
 		Webhook: Webhook{SecretEnv: "GROUPBRIDGE_WEBHOOK_SECRET", MaxSkew: Duration{5 * time.Minute}},
-		Source:  Source{Type: "keycloak", PollInterval: Duration{30 * time.Second}},
+		Source:  Source{Type: "keycloak", PollInterval: Duration{5 * time.Minute}},
 		State:   State{Path: "/var/lib/groupbridge/state.json"},
 	}
 }
@@ -150,8 +157,21 @@ func (c Config) Validate() error {
 	if c.Server.ShutdownTimeout.Duration <= 0 {
 		errs = append(errs, errors.New("server.shutdownTimeout must be positive"))
 	}
-	if c.Webhook.SecretEnv == "" || c.Webhook.MaxSkew.Duration <= 0 {
-		errs = append(errs, errors.New("webhook.secretEnv and a positive webhook.maxSkew are required"))
+	if (c.Server.TLS.CertFile == "") != (c.Server.TLS.KeyFile == "") {
+		errs = append(errs, errors.New("server.tls.certFile and server.tls.keyFile must be configured together"))
+	}
+	if c.Server.TLS.CertFile != "" &&
+		(!filepath.IsAbs(c.Server.TLS.CertFile) || !filepath.IsAbs(c.Server.TLS.KeyFile)) {
+		errs = append(errs, errors.New("server.tls.certFile and server.tls.keyFile must be absolute paths"))
+	}
+	if err := validateCredentialReference(
+		c.Webhook.SecretEnv, c.Webhook.SecretFile,
+		"webhook.secretEnv", "webhook.secretFile", true,
+	); err != nil {
+		errs = append(errs, err)
+	}
+	if c.Webhook.MaxSkew.Duration <= 0 {
+		errs = append(errs, errors.New("webhook.maxSkew must be positive"))
 	}
 	if c.Source.Type != "keycloak" {
 		errs = append(errs, fmt.Errorf("source.type must be keycloak, got %q", c.Source.Type))

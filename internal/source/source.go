@@ -11,3 +11,11 @@ import (
 type Source interface {
 	ListGroups(context.Context) ([]model.Group, error)
 }
+
+// TargetedSource supports authoritative reads for event-routed reconciliation.
+// A missing group is reported explicitly and never interpreted as permission
+// to prune targets; periodic complete snapshots own deletion convergence.
+type TargetedSource interface {
+	Source
+	ReadGroup(context.Context, string) (model.Group, bool, error)
+}

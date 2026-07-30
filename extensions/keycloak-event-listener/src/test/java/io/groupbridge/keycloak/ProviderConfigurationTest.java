@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class ProviderConfigurationTest {
@@ -94,5 +95,33 @@ class ProviderConfigurationTest {
         byte[] first = configuration.webhookSecret();
         first[0] = 0;
         assertNotEquals(0, configuration.webhookSecret()[0]);
+    }
+
+    @Test
+    void parsesAnExactJitClientAllowlistAndDefaultsToDisabled() {
+        ProviderConfiguration disabled = ProviderConfiguration.from(Map.of(
+                "webhook-url", "https://groupbridge.test/v1/events/keycloak",
+                "webhook-secret", SECRET)::get);
+        assertEquals(Set.of(), disabled.jitClientIds());
+
+        ProviderConfiguration enabled = ProviderConfiguration.from(Map.of(
+                "webhook-url", "https://groupbridge.test/v1/events/keycloak",
+                "webhook-secret", SECRET,
+                "jit-client-ids", "gitlab, another-client")::get);
+        assertEquals(Set.of("gitlab", "another-client"), enabled.jitClientIds());
+    }
+
+    @Test
+    void rejectsMalformedOrUnboundedJitClientAllowlists() {
+        Map<String, String> values = new HashMap<>();
+        values.put("webhook-url", "https://groupbridge.test/v1/events/keycloak");
+        values.put("webhook-secret", SECRET);
+        values.put("jit-client-ids", "gitlab,,hub-ui");
+        assertThrows(IllegalArgumentException.class,
+                () -> ProviderConfiguration.from(values::get));
+
+        values.put("jit-client-ids", "x".repeat(129));
+        assertThrows(IllegalArgumentException.class,
+                () -> ProviderConfiguration.from(values::get));
     }
 }

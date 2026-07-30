@@ -70,7 +70,9 @@ config:
       clientID: groupbridge
       clientSecretEnv: GROUPBRIDGE_KEYCLOAK_CLIENT_SECRET
       allowInsecureHTTP: false
-      pollInterval: 30s
+      # Event hints handle normal changes; this slower complete snapshot repairs
+      # missed events, topology changes, and external drift.
+      pollInterval: 5m
     targets:
       - name: gitlab
         type: gitlab
@@ -112,6 +114,11 @@ secret:
   # credentials from the process environment. "env" preserves legacy configs.
   providerCredentialsMode: env
   mountPath: /var/run/secrets/groupbridge
+  # "files" enables rotation-aware webhook HMAC loading and may reference a
+  # dedicated Secret independently from provider credentials.
+  webhookCredentialsMode: env
+  webhookExistingSecret: ""
+  webhookMountPath: /var/run/secrets/groupbridge-webhook
   keys:
     keycloakClientSecret: keycloak-client-secret
     gitlabToken: gitlab-token

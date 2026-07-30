@@ -6,9 +6,10 @@ the target's native API.
 
 ```mermaid
 flowchart LR
-  KC["Keycloak Admin API"] -->|"complete snapshot"| R["Go reconciler"]
+  KC["Keycloak Admin API"] -->|"exact group reads and periodic complete snapshot"| R["Go reconciler"]
   SPI["Minimal Keycloak listener"] -->|"signed hint"| WH["Webhook verifier"]
-  WH -->|"debounced wake-up"| R
+  WH -->|"private HMAC route key"| Q["Bounded keyed dirty queue"]
+  Q --> R
   TIMER["Periodic repair scan"] --> R
   R -->|"desired direct membership"| GL["GitLab API"]
   R -->|"verify policies, groups, and aliases"| VAULT["Vault Identity API"]
@@ -19,7 +20,8 @@ flowchart LR
 
 ## Invariants
 
-- Event bodies never authorize changes. They only wake the reconciler.
+- Event bodies never authorize changes. Private HMAC routing keys select an
+  authoritative Keycloak re-read; source responses and GitOps rules decide mutations.
 - A failed or partial Keycloak snapshot produces no target changes.
 - Additions and role increases happen before removals.
 - Only direct GitLab membership is read, changed, or pruned.
@@ -56,10 +58,30 @@ The first release uses an atomically replaced JSON ownership ledger on a PVC. It
 deliberately single-writer and the chart fixes the operational model at one replica.
 Webhook hints are lossy; the periodic full scan is the durability mechanism.
 
+Authenticated event bursts are gathered for a 200 millisecond quiet window and bounded
+by a two-second maximum delay. The listener sends domain-separated HMAC routing keys,
+never native user/group IDs or admin resource paths. A successful full snapshot builds
+the in-memory key-to-native-ID index. Known group/member hints re-read exactly one
+complete group and direct-member page; LOGIN and direct USER update/delete hints fan out
+only to the user's previously indexed groups. Work is serial, bounded to 10,000 distinct
+dirty routes, and a key dirtied during reconciliation receives a trailing pass.
+
+Unknown keys, including a newly created group not yet in the index, request a
+rate-limited complete topology repair. The five-minute periodic snapshot remains the
+durable drift-repair path. Membership removal and direct user disable/delete schedule a
+second exact read after 1.5 seconds, preserving the two-observation deletion gate
+without waiting for the periodic scan. Only successful logins for explicitly
+allowlisted OIDC client IDs receive the three-second GitLab JIT retry. Membership-only
+work skips Vault because Vault resolves group claims at login and its access objects are
+GitOps-owned.
+
 Provider credentials may be environment-backed for compatibility or file-backed for
 rotation. File-backed loaders reopen the configured absolute path for every Keycloak
 token request and GitLab API request. Kubernetes Secret volumes must be mounted as
 directories rather than `subPath` files so kubelet's atomic symlink swap is observable.
+The webhook HMAC supports the same mutually exclusive environment/file model. Its
+file-backed stable loader refreshes signature verification and the private route index
+without a restart while retaining the last valid value across a transient rotation.
 
 The multi-replica design boundary is a PostgreSQL-backed dirty-key queue and ownership
 store with row locking. Webhook receivers and workers can then be active-active while a

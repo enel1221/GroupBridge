@@ -165,6 +165,76 @@ func TestClientSecretFileReloadsForEveryTokenRequest(t *testing.T) {
 	}
 }
 
+func TestReadGroupUsesOnlyTheExactGroupAndMemberEndpoints(t *testing.T) {
+	var exactCalls atomic.Int32
+	var memberCalls atomic.Int32
+	var unrelatedCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/demo/protocol/openid-connect/token", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "token", "expires_in": 300})
+	})
+	mux.HandleFunc("/admin/realms/demo/groups/group-1", func(w http.ResponseWriter, _ *http.Request) {
+		exactCalls.Add(1)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": "group-1", "name": "Team", "path": "/Internal/Team",
+		})
+	})
+	mux.HandleFunc("/admin/realms/demo/groups/group-1/members", func(w http.ResponseWriter, r *http.Request) {
+		memberCalls.Add(1)
+		if r.URL.Query().Get("first") != "0" {
+			json.NewEncoder(w).Encode([]any{})
+			return
+		}
+		json.NewEncoder(w).Encode([]map[string]any{{
+			"id": "user-1", "username": "alice", "enabled": true,
+		}})
+	})
+	mux.HandleFunc("/admin/realms/demo/groups", func(w http.ResponseWriter, _ *http.Request) {
+		unrelatedCalls.Add(1)
+		http.Error(w, "tree traversal was not expected", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/admin/realms/demo/groups/group-1/children", func(w http.ResponseWriter, _ *http.Request) {
+		unrelatedCalls.Add(1)
+		http.Error(w, "child traversal was not expected", http.StatusInternalServerError)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	group, found, err := New(server.URL, "demo", "client", "secret", server.Client()).
+		ReadGroup(context.Background(), "group-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || group.ID != "group-1" || group.Path != "/Internal/Team" ||
+		len(group.Members) != 1 || group.Members[0].ID != "user-1" {
+		t.Fatalf("group = %#v, found = %t", group, found)
+	}
+	if exactCalls.Load() != 1 || memberCalls.Load() != 2 || unrelatedCalls.Load() != 0 {
+		t.Fatalf(
+			"exact=%d members=%d unrelated=%d",
+			exactCalls.Load(), memberCalls.Load(), unrelatedCalls.Load(),
+		)
+	}
+}
+
+func TestReadGroupNotFoundIsNonDestructiveSignal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/demo/protocol/openid-connect/token", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "token", "expires_in": 300})
+	})
+	mux.HandleFunc("/admin/realms/demo/groups/missing", func(w http.ResponseWriter, _ *http.Request) {
+		http.NotFound(w, nil)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	group, found, err := New(server.URL, "demo", "client", "secret", server.Client()).
+		ReadGroup(context.Background(), "missing")
+	if err != nil || found || group.ID != "" || group.Path != "" || len(group.Members) != 0 {
+		t.Fatalf("group = %#v, found = %t, error = %v", group, found, err)
+	}
+}
+
 func assertAuth(t *testing.T, r *http.Request) {
 	t.Helper()
 	if got := r.Header.Get("Authorization"); got != "Bearer token" {
