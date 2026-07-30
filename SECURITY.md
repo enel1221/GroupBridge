@@ -22,6 +22,10 @@ embargo or disclosure date is promised until scope and a fix are understood.
 - Events are untrusted hints authenticated with HMAC and replay/freshness checks.
 - GitLab mutation is bounded by target paths, allowed roles, protected principals, and
   a removal circuit breaker.
+- OIDC username matching requires an exact configured provider and external UID
+  identity; it cannot fall back to a colliding local GitLab username. Because the
+  external UID is mutable in this mode, deployments must prohibit Keycloak username
+  rename/reuse or retire the associated GitLab OIDC identity first.
 - GroupBridge never deletes GitLab groups or assigns Owner.
 - GroupBridge never reads or mutates Vault secret data, writes Vault ACL policies, or
   deletes Vault identity objects. Vault policies and mounts are GitOps-owned.

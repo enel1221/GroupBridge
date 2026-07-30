@@ -172,6 +172,80 @@ func TestFindUserOIDCRequiresExactIdentityAndResolverToken(t *testing.T) {
 	}
 }
 
+func TestFindUserOIDCUsernameRequiresExactProviderBoundIdentity(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/users", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("PRIVATE-TOKEN") != "resolver" {
+			t.Fatal("OIDC username lookup did not use the resolver token")
+		}
+		if got := r.URL.Query().Get("extern_uid"); got != "alice" {
+			t.Fatalf("extern_uid = %q, want alice", got)
+		}
+		if got := r.URL.Query().Get("provider"); got != "openid_connect" {
+			t.Fatalf("provider = %q, want openid_connect", got)
+		}
+		if got := r.URL.Query().Get("username"); got != "" {
+			t.Fatalf("unsafe username lookup was also sent: %q", got)
+		}
+		json.NewEncoder(w).Encode([]user{
+			{ID: 1, Username: "alice"},
+			{ID: 2, Username: "alice", Identities: []identity{{Provider: "other", ExternUID: "alice"}}},
+			{ID: 3, Username: "renamed-in-gitlab", Identities: []identity{{Provider: "openid_connect", ExternUID: "alice"}}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	store, _ := state.Open(filepath.Join(t.TempDir(), "state.json"))
+	found, ok, err := New("gitlab", srv.URL, "mutator", "resolver", "openid_connect", srv.Client(), store).findUser(
+		context.Background(), model.User{ID: "kc-user", Username: "alice"}, []string{"oidc-username"})
+	if err != nil || !ok || found.ID != 3 {
+		t.Fatalf("found=%+v ok=%t err=%v", found, ok, err)
+	}
+}
+
+func TestFindUserOIDCUsernameRejectsLocalSameNameAccount(t *testing.T) {
+	requests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/users", func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("extern_uid") != "alice" || r.URL.Query().Get("provider") != "openid_connect" {
+			t.Fatalf("unsafe lookup query: %s", r.URL.RawQuery)
+		}
+		json.NewEncoder(w).Encode([]user{{ID: 1, Username: "alice", State: "active"}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	store, _ := state.Open(filepath.Join(t.TempDir(), "state.json"))
+	found, ok, err := New("gitlab", srv.URL, "mutator", "resolver", "openid_connect", srv.Client(), store).findUser(
+		context.Background(), model.User{ID: "kc-user", Username: "alice"}, []string{"oidc-username"})
+	if err != nil || ok || found.ID != 0 {
+		t.Fatalf("local same-name account was accepted: found=%+v ok=%t err=%v", found, ok, err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want exactly one provider-bound lookup", requests)
+	}
+}
+
+func TestFindUserOIDCUsernameRejectsRuntimeFallback(t *testing.T) {
+	requests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/users", func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		json.NewEncoder(w).Encode([]user{{ID: 1, Username: "alice", State: "active"}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	store, _ := state.Open(filepath.Join(t.TempDir(), "state.json"))
+	_, _, err := New("gitlab", srv.URL, "mutator", "resolver", "openid_connect", srv.Client(), store).findUser(
+		context.Background(), model.User{ID: "kc-user", Username: "alice"}, []string{"oidc-username", "username"})
+	if err == nil {
+		t.Fatal("expected unsafe runtime fallback to be rejected")
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want no lookup for an unsafe strategy list", requests)
+	}
+}
+
 func TestCredentialFilesReloadForEveryRequestAndRefreshCurrentIdentity(t *testing.T) {
 	dir := t.TempDir()
 	mutationPath := filepath.Join(dir, "gitlab-token")

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -277,13 +278,16 @@ func (c Config) Validate() error {
 					errs = append(errs, fmt.Errorf("rules[%d].identityMatch must not be empty", i))
 				}
 				for _, match := range r.IdentityMatch {
-					if match != "oidc" && match != "username" && match != "email" {
+					if match != "oidc" && match != "oidc-username" && match != "username" && match != "email" {
 						errs = append(errs, fmt.Errorf("rules[%d].identityMatch contains unsupported value %q", i, match))
 					}
-					if match == "oidc" && (target.OIDCProvider == "" ||
+					if (match == "oidc" || match == "oidc-username") && (target.OIDCProvider == "" ||
 						(target.ResolverTokenEnv == "" && target.ResolverTokenFile == "")) {
-						errs = append(errs, fmt.Errorf("rules[%d] uses oidc matching but target %q lacks oidcProvider or resolverTokenEnv/resolverTokenFile", i, target.Name))
+						errs = append(errs, fmt.Errorf("rules[%d] uses %s matching but target %q lacks oidcProvider or resolverTokenEnv/resolverTokenFile", i, match, target.Name))
 					}
+				}
+				if len(r.IdentityMatch) > 1 && slices.Contains(r.IdentityMatch, "oidc-username") {
+					errs = append(errs, fmt.Errorf("rules[%d] oidc-username must be the only identityMatch strategy", i))
 				}
 			case "vault":
 				if r.Vault == nil || !safeVaultPath(r.Vault.PathPrefix) {

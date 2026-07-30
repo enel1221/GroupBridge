@@ -92,10 +92,14 @@ config:
           - root
         maxRemovals: 20
         identityMatch:
-          # Preferred: match GitLab's OIDC external UID to Keycloak's user ID.
+          # With GitLab uid_field: sub, match its OIDC external UID to the
+          # Keycloak user ID.
           # Add username/email only for installations with intentionally aligned
           # legacy accounts; those identifiers are mutable and less trustworthy.
           - oidc
+          # With uid_field: preferred_username, use only "oidc-username".
+          # It requires the exact provider-bound external identity and validation
+          # rejects any username/email fallback in the same rule.
         enforceAccessLevel: false
     state:
       path: /var/lib/groupbridge/state.json
