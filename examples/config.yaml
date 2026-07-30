@@ -44,6 +44,8 @@ rules:
       - breakglass-admin
     maxRemovals: 10
     identityMatch:
+      # Use only oidc-username instead when GitLab's OIDC uid_field is
+      # preferred_username. It never falls back to a local same-name account.
       - oidc
     enforceAccessLevel: false
   - name: engineering-vault

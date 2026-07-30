@@ -70,8 +70,12 @@ before raising the chart replica count.
 
 For GitOps-declared rules, canonical full paths are durable organization identities and
 Keycloak UUIDs are runtime correlation only. This permits a complete Keycloak rebuild
-without embedding generated UUIDs in Git. The preferred GitLab user join remains
-Keycloak user ID to GitLab OIDC external UID. Vault instead maps each direct, full
-Keycloak group path from the dedicated `vault_groups` claim to an external-group alias
-during OIDC login. Direct full paths avoid the parent-role inheritance that would
-otherwise over-grant nested organizations.
+without embedding generated UUIDs in Git. GitLab user joins are provider-bound OIDC
+external identities: preferably the immutable Keycloak user ID (`oidc`), or the exact
+Keycloak username compatibility mode (`oidc-username`) when GitLab uses
+`uid_field: preferred_username`. The latter cannot be combined with username/email
+fallbacks, so a colliding local GitLab username cannot receive access, but it requires
+an installation-level invariant that Keycloak usernames are never renamed or reused.
+Vault instead maps each direct, full Keycloak group path from the dedicated
+`vault_groups` claim to an external-group alias during OIDC login. Direct full paths
+avoid the parent-role inheritance that would otherwise over-grant nested organizations.

@@ -376,6 +376,13 @@ func (c *Client) listMembers(ctx context.Context, groupID int) ([]member, error)
 }
 
 func (c *Client) findUser(ctx context.Context, source model.User, match []string) (user, bool, error) {
+	if len(match) > 1 {
+		for _, field := range match {
+			if field == "oidc-username" {
+				return user{}, false, errors.New("oidc-username must be the only identity match strategy")
+			}
+		}
+	}
 	for _, field := range match {
 		var query url.Values
 		switch field {
@@ -384,6 +391,11 @@ func (c *Client) findUser(ctx context.Context, source model.User, match []string
 				continue
 			}
 			query = url.Values{"extern_uid": {source.ID}, "provider": {c.oidcProvider}}
+		case "oidc-username":
+			if source.Username == "" || c.oidcProvider == "" {
+				continue
+			}
+			query = url.Values{"extern_uid": {source.Username}, "provider": {c.oidcProvider}}
 		case "username":
 			if source.Username == "" {
 				continue
@@ -413,6 +425,7 @@ func (c *Client) findUser(ctx context.Context, source model.User, match []string
 		var matches []user
 		for _, candidate := range users {
 			if (field == "oidc" && hasIdentity(candidate, c.oidcProvider, source.ID)) ||
+				(field == "oidc-username" && hasIdentity(candidate, c.oidcProvider, source.Username)) ||
 				(field == "username" && strings.EqualFold(candidate.Username, source.Username)) ||
 				(field == "email" && strings.EqualFold(candidate.Email, source.Email)) {
 				matches = append(matches, candidate)

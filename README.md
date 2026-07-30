@@ -18,7 +18,8 @@ contract is intentionally small so future providers do not have to imitate GitLa
 - discovers every Keycloak group below a configured path prefix;
 - maps the hierarchy 1:1 into existing GitLab groups or creates private groups/subgroups;
 - adds, raises, and safely prunes direct GitLab memberships;
-- resolves users by Keycloak OIDC subject, with explicit username/email compatibility modes;
+- resolves users by provider-bound Keycloak OIDC subject or `preferred_username`,
+  with explicit username/email compatibility modes;
 - protects Owners, the GitLab API identity, custom-role users, and configured break-glass users;
 - refuses removal batches above a configured circuit breaker;
 - accepts timestamped, replay-protected HMAC event hints and also polls on a fixed interval;
@@ -192,9 +193,22 @@ tokens, credentials, or Keycloak representations.
 
 ### GitLab
 
-For the safest identity mapping, configure Keycloak OIDC in GitLab with `uid_field: sub`
-and set `oidcProvider` to GitLab's provider name (normally `openid_connect`). GroupBridge
-queries `extern_uid=<Keycloak user ID>&provider=<name>`. GitLab restricts that lookup to
+Set `oidcProvider` to GitLab's provider name (normally `openid_connect`) and select the
+strategy that exactly matches GitLab's `uid_field`:
+
+- `oidc` for `uid_field: sub` is the strongest option because the Keycloak user ID is
+  immutable; it queries
+  `extern_uid=<Keycloak user ID>&provider=<name>`;
+- `oidc-username` is a compatibility option for
+  `uid_field: preferred_username`; it queries
+  `extern_uid=<Keycloak username>&provider=<name>`.
+
+Both strategies verify that the returned GitLab user contains the exact provider and
+external UID identity. `oidc-username` must be the only configured identity strategy,
+so a local GitLab account with the same username is never an implicit fallback.
+However, usernames are not immutable subjects: use `oidc-username` only where Keycloak
+usernames are never renamed or reused, and retire or migrate the corresponding GitLab
+OIDC identity before either operation. GitLab restricts external-identity lookup to
 administrators, so `resolverTokenEnv` is deliberately separate from the parent-scoped
 mutation token; constrain and rotate both carefully.
 

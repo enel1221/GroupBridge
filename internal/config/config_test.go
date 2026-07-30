@@ -78,6 +78,60 @@ rules: [{name: r, sourceGroupPrefix: /, targetProvider: gl, accessLevel: develop
 	}
 }
 
+func TestDecodeSupportsProviderBoundOIDCUsernameMatching(t *testing.T) {
+	yml := `
+source: {type: keycloak, baseURL: https://kc, realm: r, clientID: c, pollInterval: 1s}
+targets:
+  - name: gl
+    type: gitlab
+    baseURL: https://gl
+    tokenEnv: TOKEN
+    resolverTokenEnv: RESOLVER
+    oidcProvider: openid_connect
+rules:
+  - name: r
+    sourceGroupPrefix: /
+    targetProvider: gl
+    accessLevel: developer
+    prune: managed-only
+    identityMatch: [oidc-username]
+`
+	cfg, err := Decode(strings.NewReader(yml))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if got := cfg.Rules[0].IdentityMatch; len(got) != 1 || got[0] != "oidc-username" {
+		t.Fatalf("identityMatch = %#v", got)
+	}
+
+	for name, target := range map[string]string{
+		"missing provider": "resolverTokenEnv: RESOLVER",
+		"missing resolver": "oidcProvider: openid_connect",
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := strings.Replace(yml,
+				"    resolverTokenEnv: RESOLVER\n    oidcProvider: openid_connect",
+				"    "+target,
+				1,
+			)
+			if _, err := Decode(strings.NewReader(bad)); err == nil ||
+				!strings.Contains(err.Error(), "uses oidc-username matching") {
+				t.Fatalf("expected oidc-username dependency error, got %v", err)
+			}
+		})
+	}
+
+	withFallback := strings.Replace(yml,
+		"identityMatch: [oidc-username]",
+		"identityMatch: [oidc-username, username]",
+		1,
+	)
+	if _, err := Decode(strings.NewReader(withFallback)); err == nil ||
+		!strings.Contains(err.Error(), "oidc-username must be the only identityMatch strategy") {
+		t.Fatalf("expected unsafe fallback rejection, got %v", err)
+	}
+}
+
 func TestDecodeSupportsExclusiveFileBackedProviderCredentials(t *testing.T) {
 	yml := `
 source:
