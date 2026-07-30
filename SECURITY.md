@@ -3,8 +3,10 @@
 ## Supported versions
 
 Until the first stable release, only the latest tagged release receives security fixes.
-Keycloak extension compatibility is pinned to the exact Keycloak line documented in its
-README and tested in CI.
+The dependency-free listener is runtime-tested against the exact Keycloak releases
+documented in its README. Compatibility with an older release is not an endorsement of
+that release's security posture; deploy a Keycloak version that still receives the
+security fixes required by the environment.
 
 ## Report a vulnerability
 
@@ -20,6 +22,9 @@ embargo or disclosure date is promised until scope and a fix are understood.
 
 - Keycloak is intentionally authoritative only inside configured source prefixes.
 - Events are untrusted hints authenticated with HMAC and replay/freshness checks.
+  Payloads carry only domain-separated HMAC routing keys. Raw Keycloak user/group IDs,
+  admin paths, representations, client/session/IP details, usernames, and emails are
+  omitted. Every target decision uses a fresh authoritative Keycloak read.
 - GitLab mutation is bounded by target paths, allowed roles, protected principals, and
   a removal circuit breaker.
 - OIDC username matching requires an exact configured provider and external UID
@@ -35,11 +40,17 @@ embargo or disclosure date is promised until scope and a fix are understood.
 - Optional Vault auth uses an explicit `audience: vault` projected service-account token
   while automatic Kubernetes API token mounting stays disabled.
 - TLS verification is on and redirects are refused by both HTTP clients.
+- The webhook receiver can serve native TLS 1.2 or newer from a read-only mounted key
+  pair. Production Keycloak-to-GroupBridge hints should use service-DNS HTTPS and a
+  narrowly scoped ingress policy rather than disabling verification. Projected
+  certificate rotations are reloaded without dropping the last known-good key pair.
 - Secrets must be supplied through referenced environment variables/Kubernetes Secrets
   and are not emitted into logs or metrics.
-- Provider credential references are mutually exclusive. File-backed credentials are
+- Provider and webhook credential references are mutually exclusive. File-backed credentials are
   size-bounded, reject control characters, and are reopened for every relevant request;
-  errors identify only the source path or environment name, never the value.
+  errors identify only the source path or environment name, never the value. Webhook
+  startup fails without a valid 32-byte value; after startup its stable loader retains
+  the last valid secret across a transient projected-volume rotation.
 
 Read [docs/architecture.md](docs/architecture.md) before changing identity resolution,
 ownership, prune, event authentication, or GitLab deletion semantics.

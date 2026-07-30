@@ -78,10 +78,58 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  keycloak-compatibility:
+    name: Keycloak ${{ matrix.version }} listener runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 26.0.8
+            image: quay.io/keycloak/keycloak:26.0.8@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858
+          - version: 26.1.5
+            image: quay.io/keycloak/keycloak:26.1.5@sha256:be6a86215213145bfb4fb3e2b3ab982a806d00262655abdcf3ffa6a38d241c7c
+          - version: 26.2.5
+            image: quay.io/keycloak/keycloak:26.2.5@sha256:4883630ef9db14031cde3e60700c9a9a8eaf1b5c24db1589d6a2d43de38ba2a9
+          - version: 26.3.5
+            image: quay.io/keycloak/keycloak:26.3.5@sha256:357829ec7c4693397533035092ad13b0644bcc95ded311f33a3738c4d9e9bdba
+          - version: 26.4.7
+            image: quay.io/keycloak/keycloak:26.4.7@sha256:9409c59bdfb65dbffa20b11e6f18b8abb9281d480c7ca402f51ed3d5977e6007
+          - version: 26.5.7
+            image: quay.io/keycloak/keycloak:26.5.7@sha256:45ae20191531eb608ddb0b775d012b40d3e4f942697f3214694887dd7c108d13
+          - version: 26.6.2
+            image: quay.io/keycloak/keycloak:26.6.2@sha256:f9ba7b2af90db8dc749a57ca9aedca51e840cb9224441ab546a968da941da900
+          - version: 26.6.4
+            image: quay.io/keycloak/keycloak:26.6.4@sha256:0aae0de7fca85525f727d3354df17896092de8bb26ae4c12d89c77e5df8cbce4
+          - version: 26.7.0
+            image: quay.io/keycloak/keycloak:26.7.0@sha256:0f198be292568439d700cdbfb893e69a6009bb43a94a06a945b1d3d506c76b13
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Build dependency-free listener artifact
+        run: docker build -t groupbridge-keycloak-extension:compat extensions/keycloak-event-listener
+
+      - name: Build version-aligned Keycloak runtime
+        env:
+          KEYCLOAK_IMAGE: ${{ matrix.image }}
+        run: >-
+          docker build
+          --build-arg PROVIDER_IMAGE=groupbridge-keycloak-extension:compat
+          --build-arg "KEYCLOAK_IMAGE=${KEYCLOAK_IMAGE}"
+          -t "groupbridge-keycloak:compat-${{ matrix.version }}"
+          -f deploy/keycloak/Dockerfile .
+
+      - name: Verify optimized signed typed event phases
+        run: hack/test-keycloak-listener-runtime.sh "groupbridge-keycloak:compat-${{ matrix.version }}"
+
   publish:
     name: Publish OCI images and chart
     if: github.event_name == 'push'
-    needs: verify
+    needs:
+      - verify
+      - keycloak-compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -135,7 +183,13 @@ jobs:
             extensions/keycloak-event-listener
           docker build \
             --build-arg PROVIDER_IMAGE=groupbridge-keycloak-extension:build \
-            -t "ghcr.io/${OWNER}/groupbridge-keycloak:build" \
+            --build-arg KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:26.6.2@sha256:f9ba7b2af90db8dc749a57ca9aedca51e840cb9224441ab546a968da941da900 \
+            -t "ghcr.io/${OWNER}/groupbridge-keycloak:build-keycloak-26.6.2" \
+            -f deploy/keycloak/Dockerfile .
+          docker build \
+            --build-arg PROVIDER_IMAGE=groupbridge-keycloak-extension:build \
+            --build-arg KEYCLOAK_IMAGE=quay.io/keycloak/keycloak:26.6.4@sha256:0aae0de7fca85525f727d3354df17896092de8bb26ae4c12d89c77e5df8cbce4 \
+            -t "ghcr.io/${OWNER}/groupbridge-keycloak:build-keycloak-26.6.4" \
             -f deploy/keycloak/Dockerfile .
 
       - name: Push release images
@@ -145,8 +199,23 @@ jobs:
         run: |
           for tag in ${IMAGE_TAGS}; do
             docker tag "ghcr.io/${OWNER}/groupbridge:build" "ghcr.io/${OWNER}/groupbridge:${tag}"
-            docker tag "ghcr.io/${OWNER}/groupbridge-keycloak:build" "ghcr.io/${OWNER}/groupbridge-keycloak:${tag}"
             docker push "ghcr.io/${OWNER}/groupbridge:${tag}"
+
+            docker tag groupbridge-keycloak-extension:build \
+              "ghcr.io/${OWNER}/groupbridge-keycloak-extension:${tag}"
+            docker push "ghcr.io/${OWNER}/groupbridge-keycloak-extension:${tag}"
+
+            for keycloak_version in 26.6.2 26.6.4; do
+              runtime="ghcr.io/${OWNER}/groupbridge-keycloak:build-keycloak-${keycloak_version}"
+              versioned="ghcr.io/${OWNER}/groupbridge-keycloak:${tag}-keycloak-${keycloak_version}"
+              docker tag "${runtime}" "${versioned}"
+              docker push "${versioned}"
+            done
+
+            # Preserve the original tag contract while making its Keycloak
+            # operand version explicit through the versioned alias above.
+            docker tag "ghcr.io/${OWNER}/groupbridge-keycloak:build-keycloak-26.6.4" \
+              "ghcr.io/${OWNER}/groupbridge-keycloak:${tag}"
             docker push "ghcr.io/${OWNER}/groupbridge-keycloak:${tag}"
           done
 

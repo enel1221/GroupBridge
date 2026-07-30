@@ -80,11 +80,10 @@ class AsyncWebhookDispatcherTest {
         return new WebhookHint(deliveryId, new WebhookPayload(
                 deliveryId,
                 Instant.EPOCH,
-                "realm-1",
                 "engineering",
                 "GROUP",
                 "UPDATE",
-                "groups/group-1",
-                "group-1"));
+                "992eada7c9836ee842f75dc1ab1d9cf872e61bb5d6536a87c2bb52cab6a8a8a0",
+                null));
     }
 }

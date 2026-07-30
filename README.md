@@ -8,10 +8,11 @@ GroupBridge is a small identity access controller that makes Keycloak group memb
 the source of truth for GitLab direct membership and Vault organization access. It is written in Go, with one
 optional dependency-free Keycloak Java listener for low-latency change hints.
 
-Events make it fast; reconciliation makes it correct. Every webhook causes GroupBridge
-to read current state from Keycloak before touching GitLab, and a periodic scan repairs
-missed events. GitLab is the first compiled-in target provider; the internal provider
-contract is intentionally small so future providers do not have to imitate GitLab.
+Events make it fast; reconciliation makes it correct. Private HMAC routing keys let
+GroupBridge re-read only the affected current group from Keycloak before touching
+GitLab; a slower complete scan repairs missed events and topology drift. GitLab is the
+first compiled-in target provider; the internal provider contract is intentionally
+small so future providers do not have to imitate GitLab.
 
 ## What works today
 
@@ -113,13 +114,26 @@ in Kubernetes because GroupBridge reopens them when it requests a Keycloak token
 calls GitLab, so projected Secret rotation does not require a pod restart.
 
 ```yaml
+server:
+  address: ":8080"
+  shutdownTimeout: 10s
+  # Configure both paths to serve native HTTPS. Mount the certificate and key
+  # read-only and use HTTPS probes when enabled.
+  # tls:
+  #   certFile: /var/run/tls/tls.crt
+  #   keyFile: /var/run/tls/tls.key
+
+webhook:
+  secretFile: /var/run/secrets/groupbridge-webhook/webhook-secret
+  maxSkew: 5m
+
 source:
   type: keycloak
   baseURL: https://keycloak.example.com
   realm: engineering
   clientID: groupbridge
   clientSecretFile: /var/run/secrets/groupbridge/keycloak-client-secret
-  pollInterval: 30s
+  pollInterval: 5m
 
 targets:
   - name: gitlab-main
@@ -144,7 +158,8 @@ rules:
     enforceAccessLevel: false
 ```
 
-Each provider credential must configure exactly one environment or file field:
+Each credential must configure exactly one environment or file field:
+`webhook.secretEnv` or `webhook.secretFile`,
 `clientSecretEnv` or `clientSecretFile`, `tokenEnv` or `tokenFile`, and
 `resolverTokenEnv` or `resolverTokenFile`. Environment-based configurations remain
 supported for compatibility, but Kubernetes does not update container environment
@@ -154,6 +169,14 @@ For file-backed chart deployments, set `secret.providerCredentialsMode: files`. 
 chart mounts `secret.existingSecret` at `/var/run/secrets/groupbridge` by default as a
 read-only directory without `subPath`; the non-root pod reads it through the configured
 `fsGroup`. The key filenames come from `secret.keys`.
+
+For rotation-aware webhook HMAC loading, set
+`secret.webhookCredentialsMode: files`, optionally set
+`secret.webhookExistingSecret` to a dedicated Secret, and configure
+`webhook.secretFile` as
+`<secret.webhookMountPath>/<secret.keys.webhookSecret>`. The last valid value is
+retained across a transient projected-Secret symlink swap, but startup fails closed
+when the file is missing, invalid, or shorter than 32 bytes.
 
 Group `/gitlab/payments/developers` maps to
 `platform/payments/developers`. `targetParent` must already exist; when
@@ -190,6 +213,32 @@ For sub-second hints, install the tiny listener described in
 configure its webhook URL and the shared 32-byte secret, and add `groupbridge` to the
 realm's event listeners. HTTPS is mandatory by default. The listener never sends PII,
 tokens, credentials, or Keycloak representations.
+
+Login hints are disabled by default. Set the listener's `jit-client-ids` to the exact
+GitLab OIDC client IDs that need a post-login retry; do not allowlist Hub, Vault, or
+general realm clients. Group and membership admin events are always eligible.
+
+For an in-cluster listener, prefer native GroupBridge HTTPS with a certificate whose
+SAN covers the service DNS name. Set `server.tls.certFile` and `server.tls.keyFile`
+together to absolute mounted paths, switch probes to HTTPS, and add the issuing CA to
+Keycloak through `KC_TRUSTSTORE_PATHS`. GroupBridge requires TLS 1.2 or newer, reloads
+the projected pair on each new handshake, and retains the last known-good pair across a
+transient malformed rotation. HTTP remains available when both fields are omitted for
+local demos and backward-compatible private deployments.
+
+With the listener enabled, authenticated event bursts settle for 200 milliseconds and
+have a two-second maximum delay. Same-group hints coalesce into one exact group/member
+read. Membership-only and login hints skip Vault verification; direct user
+disable/delete/update fans out only to that user's previously indexed groups. A
+membership revocation schedules a second exact read 1.5 seconds later so the existing
+two-observation removal guard converges within seconds. Unknown/new routing keys request
+one rate-limited complete topology repair, and a five-minute full scan remains the
+missed-event safety net.
+
+Alert when `groupbridge_webhook_accepted_total` stops increasing during known identity
+changes, `groupbridge_event_full_repairs_total` rises unexpectedly, or
+`groupbridge_reconcile_errors_total` is nonzero. The coalesced and targeted reconcile
+counters expose event load without high-cardinality identity labels.
 
 ### GitLab
 

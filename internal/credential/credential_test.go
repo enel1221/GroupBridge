@@ -80,3 +80,58 @@ func TestLoaderRejectsAmbiguousUnsafeOrInvalidSourcesWithoutLeakingValues(t *tes
 		})
 	}
 }
+
+func TestStableLoaderRotatesAndRetainsLastValidValueAcrossTransientFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret")
+	first := strings.Repeat("a", 32)
+	second := strings.Repeat("b", 32)
+	if err := os.WriteFile(path, []byte(first), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := New("", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loader, err := NewStable(source, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(second), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := loader.Load(); err != nil || got != second {
+		t.Fatalf("rotated Load() = %q, %v", got, err)
+	}
+	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := loader.Load(); err != nil || got != second {
+		t.Fatalf("transient invalid Load() = %q, %v", got, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := loader.Load(); err != nil || got != second {
+		t.Fatalf("transient missing Load() = %q, %v", got, err)
+	}
+}
+
+func TestStableLoaderFailsClosedWithoutAnInitialValidValue(t *testing.T) {
+	for name, create := range map[string]bool{"missing": false, "short": true} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "secret")
+			if create {
+				if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			source, err := New("", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewStable(source, 32); err == nil {
+				t.Fatal("expected initial secret error")
+			}
+		})
+	}
+}

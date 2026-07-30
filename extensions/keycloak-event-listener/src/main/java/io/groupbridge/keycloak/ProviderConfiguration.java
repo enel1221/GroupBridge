@@ -3,12 +3,15 @@ package io.groupbridge.keycloak;
 import java.net.URI;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 
 record ProviderConfiguration(
         URI webhookUrl,
         byte[] webhookSecret,
+        Set<String> jitClientIds,
         Duration connectTimeout,
         Duration requestTimeout,
         int workerThreads,
@@ -26,10 +29,13 @@ record ProviderConfiguration(
     private static final int MAX_QUEUE_CAPACITY = 4_096;
     private static final int DEFAULT_SHUTDOWN_TIMEOUT_MS = 2_000;
     private static final int MAX_SHUTDOWN_TIMEOUT_MS = 10_000;
+    private static final int MAX_JIT_CLIENT_IDS = 64;
+    private static final int MAX_CLIENT_ID_LENGTH = 128;
 
     ProviderConfiguration {
         Objects.requireNonNull(webhookUrl, "webhookUrl");
         webhookSecret = Objects.requireNonNull(webhookSecret, "webhookSecret").clone();
+        jitClientIds = Set.copyOf(Objects.requireNonNull(jitClientIds, "jitClientIds"));
         Objects.requireNonNull(connectTimeout, "connectTimeout");
         Objects.requireNonNull(requestTimeout, "requestTimeout");
         Objects.requireNonNull(shutdownTimeout, "shutdownTimeout");
@@ -62,9 +68,10 @@ record ProviderConfiguration(
             Duration shutdownTimeout = Duration.ofMillis(parseTimeout(
                     value.apply("shutdown-timeout-ms"), DEFAULT_SHUTDOWN_TIMEOUT_MS,
                     MAX_SHUTDOWN_TIMEOUT_MS, "shutdown-timeout-ms"));
+            Set<String> jitClientIds = parseJitClientIds(value.apply("jit-client-ids"));
 
             return new ProviderConfiguration(
-                    webhookUrl, secret, connectTimeout, requestTimeout,
+                    webhookUrl, secret, jitClientIds, connectTimeout, requestTimeout,
                     workerThreads, queueCapacity, shutdownTimeout);
         } finally {
             Arrays.fill(secret, (byte) 0);
@@ -129,6 +136,27 @@ record ProviderConfiguration(
             throw new IllegalArgumentException(name + " must be between 1 and " + maximum);
         }
         return parsed;
+    }
+
+    private static Set<String> parseJitClientIds(String configured) {
+        if (configured == null || configured.isBlank()) {
+            return Set.of();
+        }
+        String[] values = configured.split(",", -1);
+        if (values.length > MAX_JIT_CLIENT_IDS) {
+            throw new IllegalArgumentException("jit-client-ids must contain at most 64 client IDs");
+        }
+        Set<String> result = new LinkedHashSet<>();
+        for (String value : values) {
+            String clientId = value.trim();
+            if (clientId.isEmpty() || clientId.length() > MAX_CLIENT_ID_LENGTH ||
+                    clientId.chars().anyMatch(Character::isISOControl)) {
+                throw new IllegalArgumentException(
+                        "jit-client-ids entries must contain 1 to 128 non-control characters");
+            }
+            result.add(clientId);
+        }
+        return Set.copyOf(result);
     }
 
     private static String required(String configured, String name) {

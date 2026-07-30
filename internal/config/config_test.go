@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,102 @@ rules:
 	_, err = Decode(strings.NewReader(yml + "unknown: true\n"))
 	if err == nil || !strings.Contains(err.Error(), "field unknown not found") {
 		t.Fatalf("expected strict-field error, got %v", err)
+	}
+}
+
+func TestDecodeSupportsNativeServerTLS(t *testing.T) {
+	yml := `
+server:
+  address: :8443
+  tls:
+    certFile: /var/run/tls/tls.crt
+    keyFile: /var/run/tls/tls.key
+source:
+  type: keycloak
+  baseURL: https://keycloak.example
+  realm: engineering
+  clientID: groupbridge
+  pollInterval: 15s
+targets:
+  - name: gitlab
+    type: gitlab
+    baseURL: https://gitlab.example
+    tokenEnv: GITLAB_TOKEN
+rules:
+  - name: teams
+    sourceGroupPrefix: /gitlab
+    targetProvider: gitlab
+    accessLevel: developer
+    prune: none
+    identityMatch: [username]
+`
+	cfg, err := Decode(strings.NewReader(yml))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if cfg.Server.TLS.CertFile != "/var/run/tls/tls.crt" ||
+		cfg.Server.TLS.KeyFile != "/var/run/tls/tls.key" {
+		t.Fatalf("server TLS = %+v", cfg.Server.TLS)
+	}
+}
+
+func TestDecodeSupportsAbsoluteWebhookSecretFileAndRejectsAmbiguousSources(t *testing.T) {
+	base := `
+webhook:
+  secretEnv: ""
+  secretFile: /var/run/secrets/groupbridge-event/webhook-secret
+source: {type: keycloak, baseURL: https://kc, realm: r, clientID: c, pollInterval: 1s}
+targets: [{name: gl, type: gitlab, baseURL: https://gl, tokenEnv: TOKEN}]
+rules: [{name: r, sourceGroupPrefix: /, targetProvider: gl, accessLevel: developer, prune: none, identityMatch: [username]}]
+`
+	cfg, err := Decode(strings.NewReader(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Webhook.SecretEnv != "" ||
+		cfg.Webhook.SecretFile != "/var/run/secrets/groupbridge-event/webhook-secret" {
+		t.Fatalf("webhook secret source = %+v", cfg.Webhook)
+	}
+	for name, webhook := range map[string]string{
+		"both": `webhook:
+  secretEnv: GROUPBRIDGE_WEBHOOK_SECRET
+  secretFile: /var/run/secrets/groupbridge-event/webhook-secret`,
+		"relative": `webhook:
+  secretEnv: ""
+  secretFile: relative/webhook-secret`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			start := strings.Index(base, "webhook:")
+			end := strings.Index(base, "source:")
+			input := base[:start] + webhook + "\n" + base[end:]
+			if _, err := Decode(strings.NewReader(input)); err == nil {
+				t.Fatal("expected webhook secret source validation error")
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsIncompleteOrRelativeServerTLS(t *testing.T) {
+	base := `
+server:
+  tls:
+%s
+source: {type: keycloak, baseURL: https://kc, realm: r, clientID: c, pollInterval: 1s}
+targets: [{name: gl, type: gitlab, baseURL: https://gl, tokenEnv: TOKEN}]
+rules: [{name: r, sourceGroupPrefix: /, targetProvider: gl, accessLevel: developer, prune: none, identityMatch: [username]}]
+`
+	for name, fields := range map[string]string{
+		"cert only":     "    certFile: /tls/tls.crt",
+		"key only":      "    keyFile: /tls/tls.key",
+		"relative cert": "    certFile: tls.crt\n    keyFile: /tls/tls.key",
+		"relative key":  "    certFile: /tls/tls.crt\n    keyFile: tls.key",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(fmt.Sprintf(base, fields)))
+			if err == nil || !strings.Contains(err.Error(), "server.tls") {
+				t.Fatalf("expected server.tls validation error, got %v", err)
+			}
+		})
 	}
 }
 

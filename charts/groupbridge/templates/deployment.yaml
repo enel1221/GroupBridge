@@ -67,11 +67,13 @@ spec:
                   name: {{ .Values.secret.existingSecret }}
                   key: {{ .Values.secret.keys.gitlabResolverToken }}
             {{- end }}
+            {{- if eq .Values.secret.webhookCredentialsMode "env" }}
             - name: GROUPBRIDGE_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secret.existingSecret }}
+                  name: {{ default .Values.secret.existingSecret .Values.secret.webhookExistingSecret }}
                   key: {{ .Values.secret.keys.webhookSecret }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -99,6 +101,13 @@ spec:
             # swaps. Do not replace this with a subPath mount.
             - name: provider-credentials
               mountPath: {{ .Values.secret.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if eq .Values.secret.webhookCredentialsMode "files" }}
+            # Directory mounts observe Kubernetes projected-Secret symlink
+            # swaps. Do not replace this with a subPath mount.
+            - name: webhook-credential
+              mountPath: {{ .Values.secret.webhookMountPath }}
               readOnly: true
             {{- end }}
             {{- if .Values.persistence.enabled }}
@@ -135,6 +144,15 @@ spec:
                 path: {{ .Values.secret.keys.gitlabToken }}
               - key: {{ .Values.secret.keys.gitlabResolverToken }}
                 path: {{ .Values.secret.keys.gitlabResolverToken }}
+        {{- end }}
+        {{- if eq .Values.secret.webhookCredentialsMode "files" }}
+        - name: webhook-credential
+          secret:
+            secretName: {{ default .Values.secret.existingSecret .Values.secret.webhookExistingSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secret.keys.webhookSecret }}
+                path: {{ .Values.secret.keys.webhookSecret }}
         {{- end }}
         {{- if .Values.persistence.enabled }}
         - name: state

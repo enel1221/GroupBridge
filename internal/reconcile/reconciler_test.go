@@ -3,10 +3,13 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/enel1221/GroupBridge/internal/config"
 	"github.com/enel1221/GroupBridge/internal/metrics"
@@ -21,6 +24,42 @@ type fakeSource struct {
 }
 
 func (f fakeSource) ListGroups(context.Context) ([]model.Group, error) { return f.groups, f.err }
+
+type targetedFakeSource struct {
+	groups    []model.Group
+	target    model.Group
+	found     bool
+	listErr   error
+	targetErr error
+	listCalls atomic.Int32
+	readCalls atomic.Int32
+}
+
+type multiTargetSource struct {
+	initial   []model.Group
+	current   map[string]model.Group
+	readCalls atomic.Int32
+}
+
+func (f *multiTargetSource) ListGroups(context.Context) ([]model.Group, error) {
+	return f.initial, nil
+}
+
+func (f *multiTargetSource) ReadGroup(_ context.Context, groupID string) (model.Group, bool, error) {
+	f.readCalls.Add(1)
+	group, found := f.current[groupID]
+	return group, found, nil
+}
+
+func (f *targetedFakeSource) ListGroups(context.Context) ([]model.Group, error) {
+	f.listCalls.Add(1)
+	return f.groups, f.listErr
+}
+
+func (f *targetedFakeSource) ReadGroup(context.Context, string) (model.Group, bool, error) {
+	f.readCalls.Add(1)
+	return f.target, f.found, f.targetErr
+}
 
 type fakeProvider struct{ requests []model.SyncRequest }
 
@@ -292,6 +331,201 @@ func TestExactAllowlistMigratesLegacyGitLabUUIDMappingAndHandlesUUIDChurn(t *tes
 	if len(fp.requests) != 1 || fp.requests[0].StateKey != "/Internal/CCMO" {
 		t.Fatalf("canonical request = %#v", fp.requests)
 	}
+}
+
+func TestMembershipEventReadsOnlyOneGroupAcrossFiveThousandAndSkipsVault(t *testing.T) {
+	const groupCount = 5_000
+	groups := make([]model.Group, 0, groupCount)
+	for index := range groupCount {
+		groups = append(groups, model.Group{
+			ID:   fmt.Sprintf("group-%d", index),
+			Path: fmt.Sprintf("/Internal/Team-%d", index),
+			Members: []model.User{{
+				ID: fmt.Sprintf("user-%d", index),
+			}},
+		})
+	}
+	target := groups[groupCount/2]
+	src := &targetedFakeSource{groups: groups, target: target, found: true}
+	gitlab := &fakeProvider{}
+	vault := &fakeAccessProvider{}
+	m := &metrics.Metrics{}
+	r := New(src, provider.NewRegistry(gitlab, vault), []config.Rule{
+		{
+			Name: "gitlab", SourceGroupPrefix: "/Internal", TargetProvider: "gitlab",
+			TargetParent: "internal", AccessLevel: "developer", Prune: "managed-only",
+		},
+		{
+			Name: "vault", SourceGroupPrefix: "/Internal", TargetProvider: "vault",
+			Prune: "none", Vault: &config.VaultRule{
+				PathPrefix: "internal", AccessProfile: "editor",
+			},
+		},
+	}, mustStore(t), m, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	secret := &mutableRoutingSecret{value: strings.Repeat("s", 32)}
+	r.ConfigureEventRouting(secret, "engineering")
+	if err := r.routes.Replace(groups); err != nil {
+		t.Fatal(err)
+	}
+	groupKey, found := r.routes.RouteForGroup(target.ID)
+	if !found {
+		t.Fatal("target group route is missing")
+	}
+
+	r.processEventBatch(context.Background(), eventBatch{
+		groups: map[string]eventWork{groupKey: {}},
+		users:  map[string]eventUserWork{},
+	})
+
+	if got := src.listCalls.Load(); got != 0 {
+		t.Fatalf("complete tree reads = %d, want 0", got)
+	}
+	if got := src.readCalls.Load(); got != 1 {
+		t.Fatalf("targeted group reads = %d, want 1", got)
+	}
+	if len(gitlab.requests) != 1 || gitlab.requests[0].SourceGroup.ID != target.ID {
+		t.Fatalf("GitLab requests = %#v", gitlab.requests)
+	}
+	if len(vault.requests) != 0 {
+		t.Fatalf("membership hint caused Vault work: %#v", vault.requests)
+	}
+	if got := m.EventTargetedRuns.Load(); got != 1 {
+		t.Fatalf("targeted reconcile metric = %d, want 1", got)
+	}
+}
+
+func TestTargetedSourceFailureOrMissingGroupCausesNoTargetMutation(t *testing.T) {
+	for name, source := range map[string]*targetedFakeSource{
+		"failed-read": {
+			targetErr: errors.New("partial member page failed"),
+		},
+		"missing-group": {
+			found: false,
+		},
+		"outside-allowlist": {
+			target: model.Group{ID: "group-1", Path: "/Other/Team"},
+			found:  true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gitlab := &fakeProvider{}
+			r := New(source, provider.NewRegistry(gitlab), []config.Rule{{
+				Name: "gitlab", SourceGroupPrefix: "/Internal",
+				SourceGroupPaths: []string{"/Internal/Team"},
+				TargetProvider:   "gitlab", TargetParent: "internal",
+				AccessLevel: "developer", Prune: "managed-only",
+			}}, mustStore(t), &metrics.Metrics{},
+				slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+			err := r.RunGroupOnce(context.Background(), "group-1", true)
+			if name == "failed-read" && err == nil {
+				t.Fatal("expected source read failure")
+			}
+			if name != "failed-read" && err != nil {
+				t.Fatal(err)
+			}
+			if len(gitlab.requests) != 0 {
+				t.Fatalf("target was mutated: %#v", gitlab.requests)
+			}
+		})
+	}
+}
+
+func TestFailedFullRepairKeepsKnownKeyedWorkAndRequeuesTopologyRepair(t *testing.T) {
+	group := model.Group{ID: "known", Path: "/Internal/Known"}
+	src := &targetedFakeSource{
+		groups: []model.Group{group}, target: group, found: true,
+		listErr: errors.New("root group page failed"),
+	}
+	gitlab := &fakeProvider{}
+	r := New(src, provider.NewRegistry(gitlab), []config.Rule{{
+		Name: "gitlab", SourceGroupPrefix: "/Internal",
+		TargetProvider: "gitlab", TargetParent: "internal",
+		AccessLevel: "developer", Prune: "managed-only",
+	}}, mustStore(t), &metrics.Metrics{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	secret := &mutableRoutingSecret{value: strings.Repeat("s", 32)}
+	r.ConfigureEventRouting(secret, "engineering")
+	if err := r.routes.Replace([]model.Group{group}); err != nil {
+		t.Fatal(err)
+	}
+	knownKey, _ := r.routes.RouteForGroup(group.ID)
+	r.processEventBatch(context.Background(), eventBatch{
+		groups: map[string]eventWork{
+			knownKey:                {},
+			strings.Repeat("f", 64): {},
+		},
+		users: map[string]eventUserWork{},
+	})
+
+	if got := src.listCalls.Load(); got != 1 {
+		t.Fatalf("full repair calls = %d, want 1", got)
+	}
+	if got := src.readCalls.Load(); got != 1 {
+		t.Fatalf("known targeted reads = %d, want 1", got)
+	}
+	if len(gitlab.requests) != 1 || gitlab.requests[0].SourceGroup.ID != group.ID {
+		t.Fatalf("known work was dropped: %#v", gitlab.requests)
+	}
+	r.events.mu.Lock()
+	delayedRepairs := len(r.events.delayed)
+	r.events.mu.Unlock()
+	if delayedRepairs != 1 {
+		t.Fatalf("delayed topology repairs = %d, want 1", delayedRepairs)
+	}
+	r.events.Close()
+}
+
+func TestDirectUserDeleteConfirmsEveryPriorGroupWithinSeconds(t *testing.T) {
+	user := model.User{ID: "deleted-user"}
+	initial := []model.Group{
+		{ID: "group-1", Path: "/Internal/One", Members: []model.User{user}},
+		{ID: "group-2", Path: "/Internal/Two", Members: []model.User{user}},
+		{ID: "group-3", Path: "/Internal/Three", Members: []model.User{user}},
+	}
+	current := make(map[string]model.Group, len(initial))
+	for _, group := range initial {
+		group.Members = nil
+		current[group.ID] = group
+	}
+	src := &multiTargetSource{initial: initial, current: current}
+	gitlab := &fakeProvider{}
+	r := New(src, provider.NewRegistry(gitlab), []config.Rule{{
+		Name: "gitlab", SourceGroupPrefix: "/Internal",
+		TargetProvider: "gitlab", TargetParent: "internal",
+		AccessLevel: "developer", Prune: "managed-only",
+	}}, mustStore(t), &metrics.Metrics{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	secret := &mutableRoutingSecret{value: strings.Repeat("s", 32)}
+	r.ConfigureEventRouting(secret, "engineering")
+	if err := r.routes.Replace(initial); err != nil {
+		t.Fatal(err)
+	}
+	userKey := routingKey(
+		[]byte(strings.Repeat("s", 32)), "user", "engineering", user.ID,
+	)
+	r.processEventBatch(context.Background(), eventBatch{
+		groups: map[string]eventWork{},
+		users: map[string]eventUserWork{
+			userKey: {confirmMembership: true},
+		},
+	})
+	if got := src.readCalls.Load(); got != 3 {
+		t.Fatalf("first authoritative reads = %d, want 3", got)
+	}
+
+	select {
+	case <-r.events.Wake():
+	case <-time.After(3 * time.Second):
+		t.Fatal("second membership confirmation was not scheduled")
+	}
+	r.processEventBatch(context.Background(), r.events.Drain())
+	if got := src.readCalls.Load(); got != 6 {
+		t.Fatalf("authoritative reads after confirmation = %d, want 6", got)
+	}
+	if len(gitlab.requests) != 6 {
+		t.Fatalf("provider requests = %d, want two guarded reads for each group", len(gitlab.requests))
+	}
+	r.events.Close()
 }
 
 func mustStore(t *testing.T) *state.Store {

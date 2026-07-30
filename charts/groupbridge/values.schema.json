@@ -63,11 +63,14 @@
     "secret": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["existingSecret", "providerCredentialsMode", "mountPath", "keys"],
+      "required": ["existingSecret", "providerCredentialsMode", "mountPath", "webhookCredentialsMode", "webhookExistingSecret", "webhookMountPath", "keys"],
       "properties": {
         "existingSecret": { "type": "string", "minLength": 1 },
         "providerCredentialsMode": { "enum": ["env", "files"] },
         "mountPath": { "type": "string", "pattern": "^/" },
+        "webhookCredentialsMode": { "enum": ["env", "files"] },
+        "webhookExistingSecret": { "type": "string" },
+        "webhookMountPath": { "type": "string", "pattern": "^/" },
         "keys": {
           "type": "object",
           "additionalProperties": false,

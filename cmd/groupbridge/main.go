@@ -64,12 +64,13 @@ func run() error {
 	if _, err := keycloakSecret.Load(); err != nil {
 		return fmt.Errorf("load Keycloak client credential: %w", err)
 	}
-	webhookSecret, err := config.Secret(cfg.Webhook.SecretEnv)
+	webhookSecretSource, err := credential.New(cfg.Webhook.SecretEnv, cfg.Webhook.SecretFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("configure webhook credential: %w", err)
 	}
-	if len([]byte(webhookSecret)) < 32 {
-		return errors.New("webhook secret must contain at least 32 bytes")
+	webhookSecret, err := credential.NewStable(webhookSecretSource, 32)
+	if err != nil {
+		return fmt.Errorf("load webhook credential: %w", err)
 	}
 	store, err := state.Open(cfg.State.Path)
 	if err != nil {
@@ -123,23 +124,11 @@ func run() error {
 	}
 	registry := provider.NewRegistry(providers...)
 	m := &metrics.Metrics{}
-	trigger := make(chan struct{}, 1)
-	requestReconcile := func() {
-		select {
-		case trigger <- struct{}{}:
-		default:
-		}
-	}
-	requestEventReconcile := func() {
-		requestReconcile()
-		// OIDC login can create the GitLab user just after Keycloak emits its
-		// login event. One coalesced delayed read closes that JIT race without a
-		// permanent high-frequency retry loop for identities that do not exist.
-		time.AfterFunc(3*time.Second, requestReconcile)
-	}
-	wh := webhook.New(webhookSecret, cfg.Source.Realm, cfg.Webhook.MaxSkew.Duration, requestEventReconcile, m)
-	httpSurface := app.NewServer(wh, m, version)
+	var httpSurface *app.Server
 	reconciler := reconcile.New(src, registry, cfg.Rules, store, m, logger, func() { httpSurface.SetReady(true) })
+	reconciler.ConfigureEventRouting(webhookSecret, cfg.Source.Realm)
+	wh := webhook.New(webhookSecret, cfg.Source.Realm, cfg.Webhook.MaxSkew.Duration, reconciler.EnqueueEvent, m)
+	httpSurface = app.NewServer(wh, m, version)
 
 	workerCtx, forceStopWorkers := context.WithCancel(context.Background())
 	defer forceStopWorkers()
@@ -148,18 +137,23 @@ func run() error {
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
-		reconciler.Run(workerCtx, cfg.Source.PollInterval.Duration, trigger, stopWorkers)
+		reconciler.Run(workerCtx, cfg.Source.PollInterval.Duration, stopWorkers)
 	}()
 	server := &http.Server{
 		Addr: cfg.Server.Address, Handler: httpSurface.Handler(),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second,
 		MaxHeaderBytes: 32 << 10,
+		TLSConfig:      &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 	serverErr := make(chan error, 1)
 	go func() {
-		logger.Info("GroupBridge listening", "address", cfg.Server.Address, "version", version, "commit", commit)
-		serverErr <- server.ListenAndServe()
+		logger.Info("GroupBridge listening",
+			"address", cfg.Server.Address,
+			"tls", cfg.Server.TLS.CertFile != "",
+			"version", version,
+			"commit", commit)
+		serverErr <- listenAndServe(server, cfg.Server.TLS, logger)
 	}()
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)

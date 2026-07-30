@@ -14,22 +14,28 @@ record WebhookHint(String deliveryId, WebhookPayload payload) {
         Objects.requireNonNull(payload, "payload");
     }
 
-    static WebhookHint from(AdminEvent event) {
-        return from(event, () -> UUID.randomUUID().toString());
+    static WebhookHint from(AdminEvent event, RoutingKey routingKey) {
+        return from(event, routingKey, () -> UUID.randomUUID().toString());
     }
 
-    static WebhookHint from(AdminEvent event, Supplier<String> deliveryIdSupplier) {
+    static WebhookHint from(
+            AdminEvent event,
+            RoutingKey routingKey,
+            Supplier<String> deliveryIdSupplier) {
         String deliveryId = deliveryId(event.getId(), deliveryIdSupplier);
-        return new WebhookHint(deliveryId, WebhookPayload.from(event, deliveryId));
+        return new WebhookHint(deliveryId, WebhookPayload.from(event, deliveryId, routingKey));
     }
 
-    static WebhookHint from(Event event) {
-        return from(event, () -> UUID.randomUUID().toString());
+    static WebhookHint from(Event event, RoutingKey routingKey) {
+        return from(event, routingKey, () -> UUID.randomUUID().toString());
     }
 
-    static WebhookHint from(Event event, Supplier<String> deliveryIdSupplier) {
+    static WebhookHint from(
+            Event event,
+            RoutingKey routingKey,
+            Supplier<String> deliveryIdSupplier) {
         String deliveryId = deliveryId(event.getId(), deliveryIdSupplier);
-        return new WebhookHint(deliveryId, WebhookPayload.from(event, deliveryId));
+        return new WebhookHint(deliveryId, WebhookPayload.from(event, deliveryId, routingKey));
     }
 
     private static String deliveryId(String eventId, Supplier<String> deliveryIdSupplier) {

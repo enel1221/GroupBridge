@@ -34,7 +34,8 @@
       <scope>provided</scope>
     </dependency>
     <!--
-      Keycloak 26.6.4 packages the documented EventListenerProvider API plus
+      The tested Keycloak 26.x line packages the documented
+      EventListenerProvider API plus
       Event, EventType, AdminEvent, OperationType, and ResourceType in this
       artifact. A compile check without it fails on those exact symbols.
       Scope remains provided, so no private-SPI classes are bundled in our JAR.
@@ -82,7 +83,7 @@
             <manifestEntries>
               <Implementation-Title>GroupBridge Keycloak event listener</Implementation-Title>
               <Implementation-Version>${project.version}</Implementation-Version>
-              <Keycloak-Version>${keycloak.version}</Keycloak-Version>
+              <Keycloak-Compile-Version>${keycloak.version}</Keycloak-Compile-Version>
             </manifestEntries>
           </archive>
         </configuration>
